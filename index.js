@@ -6,7 +6,7 @@
  */
 const fs = require('fs')
 const path = require('path')
-const { default: makeWASocket, useMultiFileAuthState, makeCacheableSignalKeyStore, DisconnectReason, Browsers, jidNormalizedUser } = require('@whiskeysockets/baileys')
+const { default: makeWASocket, useMultiFileAuthState, makeCacheableSignalKeyStore, DisconnectReason, Browsers, jidNormalizedUser } = require('mzazibaileys')
 const pino = require('pino')
 const logger = pino({ level: 'silent' })
 const { Boom } = require('@hapi/boom')
@@ -582,7 +582,7 @@ function sessionNumberFromState(state) {
 }
 
 function getBaileysVersion() {
-    try { return String(require('@whiskeysockets/baileys/package.json').version || 'unknown') }
+    try { return String(require('mzazibaileys/package.json').version || 'unknown') }
     catch { return 'unknown' }
 }
 

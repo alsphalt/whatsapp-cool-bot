@@ -4,7 +4,7 @@
  * Please keep this credit notice in redistributed versions.
  * © DARKNOTE L2 • Bigbrother
  */
-const baileys = require('@whiskeysockets/baileys')
+const baileys = require('mzazibaileys')
 
 const {
     default: makeWASocket,
@@ -41,7 +41,7 @@ const weather = require('./lib/weather.js');
 const aiChat = require('./lib/ai-chat.js');
 const lyrics = require('./lib/lyrics.js');
 // Global reaction feedback: ⏳ while a command works, ✅ / ❌ when it settles.
-const { withReaction, setReaction } = require('./lib/reactions.js');
+const { withReaction, setReaction, reactSequence, MENU_REACTIONS } = require('./lib/reactions.js');
 // The ONE global button system (see lib/buttons.js).
 const buttonsystem = require('./lib/buttons.js');
 // The `.ping` system dashboard (metrics + rich HTML card, with a text fallback).
@@ -339,6 +339,8 @@ async function processSelectedYtVideo(conn, m, selected) {
     const filePath = path.join(tempDir, `${requestToken}.mp4`);
     const title = metadata.title || selected.title || 'YouTube video';
 
+    // Media feedback while the video is fetched: 🎬 → ⏳, then ✅ / ❌.
+    void reactSequence(conn, m, ['🎬', '⏳'], { gapMs: 250 }).catch(() => { });
     await m.bigboreply(`⏳ Downloading your selected video...\n🎬 ${title}\n⏱ ${formatVideoDuration(duration || selected.duration)}`);
     try {
         await fs.promises.mkdir(tempDir, { recursive: true });
@@ -363,6 +365,7 @@ async function processSelectedYtVideo(conn, m, selected) {
             caption: '✅ Video downloaded successfully.'
         }, { quoted: m });
 
+        await setReaction(conn, m, '✅');
         await sendChannelButton(conn, m);
     } catch (error) {
         console.error('[YTVIDEO] Download/send failed:', error?.stack || error);
@@ -1078,8 +1081,15 @@ module.exports = async (conn, m) => {
         switch (command) {
 
         case 'menu': {
-            // Instant command: acknowledge the tap and settle immediately.
-            await setReaction(conn, m, '✅');
+            /*
+             * The menu reaction run: 🫵🏼💔🥱💀🌚💯✅ (see MENU_REACTIONS).
+             *
+             * Deliberately NOT awaited: the seven frames take about two seconds
+             * and holding the reply behind them would make .menu feel slow. The
+             * animation plays while the menu is built and sent. setReaction()
+             * swallows its own errors, so this cannot break the command.
+             */
+            void reactSequence(conn, m, MENU_REACTIONS).catch(() => { });
             const runtime = process.uptime()
             const rawStamp = m.messageTimestamp
             const stampSeconds = (rawStamp && typeof rawStamp === 'object' && typeof rawStamp.toNumber === 'function')
@@ -2504,7 +2514,8 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
                 const query = args.join(' ').trim();
                 if (!query) return bigboreply(`🎵 *YouTube Song Search*\n\nUsage: ${config.prefix || '.'}song <song name>`);
                 if (query.length > 100) return bigboreply('❌ Search query is too long.');
-                await setReaction(conn, m, '⏳');
+                // Music feedback while the search runs: 🎵 → 🔎 → ⏳, then ✅ / ❌.
+                await reactSequence(conn, m, ['🎵', '🔎', '⏳'], { gapMs: 250 });
                 await bigboreply('🔎 Searching YouTube...');
                 try {
                     const search = await ytSearch(query);
@@ -2539,18 +2550,25 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
                 const selected = songSelections.get(songKey(m, token));
                 if (!selected?.results?.[index]) return bigboreply('❌ This song selection has expired. Use .song again.');
                 const song = selected.results[index];
+                // Music feedback while the audio is fetched: 🎵 → ⏳, then ✅.
+                void reactSequence(conn, m, ['🎵', '⏳'], { gapMs: 250 }).catch(() => { });
                 await bigboreply(`⏳ Downloading audio...\n🎵 ${song.title}`);
                 try {
                     const result = await ytdlAutoBuffer(song.url, 'audio');
-                    if (!result?.status || !Buffer.isBuffer(result.buffer)) return bigboreply(`❌ Failed to download the audio.\n${result?.error || ''}`.trim());
+                    if (!result?.status || !Buffer.isBuffer(result.buffer)) {
+                        await setReaction(conn, m, '❌');
+                        return bigboreply(`❌ Failed to download the audio.\n${result?.error || ''}`.trim());
+                    }
                     await conn.sendMessage(m.chat, {
                         audio: result.buffer,
                         mimetype: result.mimetype || 'audio/mpeg',
                         fileName: `${(result.title || song.title).replace(/[\\/:*?"<>|]/g, '').slice(0, 80)}.mp3`,
                         ptt: false
                     }, { quoted: m });
+                    await setReaction(conn, m, '✅');
                 } catch (e) {
                     console.error('song audio error:', e);
+                    await setReaction(conn, m, '❌');
                     await bigboreply('❌ Failed to send the audio. Please try another result.');
                 }
                 break;

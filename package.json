@@ -1,5 +1,5 @@
 {
-  "name": "darknote",
+  "name": "DARKNOTE 🌑",
   "version": "1.0.0",
   "author": "Bigbrother",
   "type": "commonjs",
@@ -7,12 +7,10 @@
   "scripts": {
     "start": "node index.js",
     "protect": "node scripts/protect.js",
-    "protect:downloader": "node scripts/protect-downloader.js",
-    "test": "node tests/run.js",
-    "audit": "node scripts/stability-audit.js"
+    "protect:downloader": "node scripts/protect-downloader.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "npm:levvleys",
+    "mzazibaileys": "^2.2.2",
     "@hapi/boom": "^10.0.1",
     "acrcloud": "^1.4.0",
     "sharp": "0.34.5",
