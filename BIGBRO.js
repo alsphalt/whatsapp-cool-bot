@@ -44,6 +44,8 @@ const lyrics = require('./lib/lyrics.js');
 const { withReaction, setReaction } = require('./lib/reactions.js');
 // The ONE global button system (see lib/buttons.js).
 const buttonsystem = require('./lib/buttons.js');
+// The `.ping` system dashboard (metrics + rich HTML card, with a text fallback).
+const pingDashboard = require('./lib/ping-dashboard.js');
 // DARKNOTE AI service. The automatic conversational chatbot lives entirely in
 // ./ai and is reached only through this facade. aiChat above stays as-is for the
 // legacy prefixed .ai command; this is a separate, independent module.
@@ -2624,16 +2626,27 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
                 break;
 
             case 'ping': {
-                const start = Date.now();
-                const sent = await bigboreply('Measuring ping...');
-                const latency = Date.now() - start;
-                const totalMem = (os.totalmem() / 1024 / 1024 / 1024).toFixed(2);
-                const freeMem = (os.freemem() / 1024 / 1024 / 1024).toFixed(2);
-                const uptimeHours = (os.uptime() / 3600).toFixed(2);
-                const cpuModel = os.cpus()[0]?.model || 'Unknown';
-                const cpuCores = os.cpus().length;
-                const vpsText = `VPS DATA\n- Hostname: ${os.hostname()}\n- Platform: ${os.platform()} ${os.arch()}\n- Uptime: ${uptimeHours} hours\n- RAM: ${freeMem} GB / ${totalMem} GB (Free/Total)\n- CPU: ${cpuCores} Core, ${cpuModel.substring(0, 30)}`;
-                await conn.sendMessage(m.chat, { text: `Pong! ${latency} ms\n\n${vpsText}`, edit: sent.key });
+                /*
+                 * SYSTEM DASHBOARD.
+                 *
+                 * The metrics and the rich HTML card live in
+                 * lib/ping-dashboard.js so this dispatcher stays readable and the
+                 * AIRich dependency stays out of the startup path - it is loaded
+                 * lazily, only when someone actually runs .ping.
+                 *
+                 * sendPingDashboard never throws: when the rich primitive cannot
+                 * be delivered it answers with the plain-text card, because that
+                 * primitive is only rendered by clients that support it and
+                 * AIRich is configured to fail silently otherwise.
+                 */
+                const pingResult = await pingDashboard.sendPingDashboard(conn, m, {
+                    brand: config.botName || 'DARKNOTE',
+                    reply: bigboreply,
+                    react: emoji => setReaction(conn, m, emoji)
+                });
+                if (pingResult && pingResult.ok === false) {
+                    console.error(`[PING] answered as text: ${pingResult.reason || 'rich card unavailable'}`);
+                }
                 break;
             }
 
