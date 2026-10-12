@@ -46,6 +46,8 @@ const { withReaction, setReaction, reactSequence, MENU_REACTIONS } = require('./
 const buttonsystem = require('./lib/buttons.js');
 // The `.ping` system dashboard (metrics + rich HTML card, with a text fallback).
 const pingDashboard = require('./lib/ping-dashboard.js');
+// Owner assistant: run a real command by talking to the bot in plain language.
+const assistant = require('./lib/assistant.js');
 // DARKNOTE AI service. The automatic conversational chatbot lives entirely in
 // ./ai and is reached only through this facade. aiChat above stays as-is for the
 // legacy prefixed .ai command; this is a separate, independent module.
@@ -1025,6 +1027,34 @@ module.exports = async (conn, m) => {
                 // shadow a registered command. aiService.handle() decides for
                 // itself whether this message qualifies (DM, or a real mention
                 // in a group) and returns immediately when it does not.
+                /*
+                 * OWNER ASSISTANT - plain-language commands.
+                 *
+                 * Runs BEFORE the conversational layers, so it works with
+                 * `.chatbot` OFF: the owner talking to the bot is a different
+                 * thing from the chatbot being enabled.
+                 *
+                 * It never invents a command - a name must exist in this
+                 * dispatcher's registry - and it executes by re-entering this
+                 * same dispatcher through the synthetic-command hook, so every
+                 * permission check, confirmation gate and reply is unchanged.
+                 */
+                try {
+                    const outcome = await assistant.maybeHandle(conn, m, {
+                        isOwner: isOwner(m),
+                        isDirect: !m.isGroup,
+                        prefix: config.prefix,
+                        react: emoji => setReaction(conn, m, emoji),
+                        dispatch: async synthetic => {
+                            m.__darknoteSyntheticCommand = synthetic;
+                            await module.exports(conn, m);
+                        }
+                    });
+                    if (outcome && outcome.handled) return;
+                } catch (error) {
+                    console.error('[ASSISTANT] failed:', error?.stack || error);
+                }
+
                 try {
                     await aiService.handle(conn, m, {
                         isOwner: isOwner(m),
