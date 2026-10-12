@@ -1,0 +1,40 @@
+# Never commit secrets or runtime state.
+.env
+
+# Baileys session credentials - these grant full access to the paired account.
+auth/
+
+# Runtime scratch files.
+node_modules/
+tmp/
+*.log
+
+# The bot writes its runtime stores here (owner.json, ai-sessions.json,
+# group-activity.json, sticker-commands.json ...). Uncomment the next line if you
+# do not want to version them.
+# database/*.json
+
+# The AI conversation memory holds real users' messages. Ignored explicitly so
+# private conversations can never end up in version control.
+database/ai-memory.json
+
+# Runtime stores: these hold OTHER PEOPLE'S private messages, phone numbers and
+# the owner store. They were only conditionally ignored before, which would have
+# published third-party conversations to a public repository.
+database/
+
+# Telegram-paired WhatsApp sessions. Each holds a full set of Baileys
+# credentials for a linked account, exactly like auth/ above - so they must
+# never be committed either. Written as a glob because the controller creates one
+# directory per Telegram user (auth_tg_<userId>).
+auth_tg_*/
+
+# Sessions paired from Telegram. Each holds a full set of Baileys credentials
+# for a linked WhatsApp account, exactly like auth/ and auth_tg_*/ above - so
+# they must never be committed either. Created by lib/sessions.js, one directory
+# per session.
+sessions/
+
+# Local secret configuration
+config.js
+api.js

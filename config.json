@@ -1,0 +1,181 @@
+{
+  "ownerNumber": "254107287140",
+  "ownerJid": "254107287140@s.whatsapp.net",
+  "botName": "DARKNOTE",
+  "pairingCode": "DARKNOTE",
+  "cards": {
+    "mode": "auto",
+    "image": "./src/img/menu.jpg"
+  },
+  "shazam": {
+    "results": 5,
+    "maxVideoBytes": 67108864
+  },
+  "instagram": {
+    "endpoint": "https://aemt.me/download/igstalk?username={username}",
+    "timeoutMs": 20000
+  },
+  "protectedBlockJids": [],
+  "mode": "self",
+  "prefix": ".",
+  "ownerName": "DARKNOTE",
+  "channelLink": "https://whatsapp.com/channel/REPLACE_WITH_YOUR_CHANNEL",
+  "vv2Auto": false,
+  "anticall": false,
+  "antilink": "kick",
+  "autoread": false,
+  "autotyping": true,
+  "autorecoding": false,
+  "antideleteSkipOwner": false,
+  "ai": {
+    "ownerShortDelay": 5,
+    "ownerNormalDelayMin": 5,
+    "ownerNormalDelayMax": 5,
+    "ownerLongDelayMin": 5,
+    "ownerLongDelayMax": 5,
+    "chatbotDelayMode": "short",
+    "chatbotDelayShort": 270,
+    "chatbotDelayLong": 630,
+    "replyDelayMode": "short",
+    "replyDelayShortMin": 5,
+    "replyDelayShortMax": 5,
+    "replyDelayLongMin": 5,
+    "replyDelayLongMax": 5,
+    "longSilenceMinutes": 90,
+    "followUpMaxPerSilence": 0,
+    "shortAckReaction": true,
+    "shortAckSilence": true,
+    "abuseSafetyEnabled": true,
+    "onlineCycleEnabled": false,
+    "onlineCycleMs": 0,
+    "provider": "gpt-5.3-chat",
+    "baseUrl": "https://www.mzazi.shop",
+    "endpoint": "https://www.mzazi.shop/api/ai/gpt-5",
+    "chatbotEnabled": true,
+    "dmEnabled": true,
+    "groupEnabled": true,
+    "typingEnabled": true,
+    "memoryEnabled": true,
+    "responseTimingEnabled": true,
+    "languageEnabled": true,
+    "replyContextEnabled": true,
+    "combineEnabled": true,
+    "emojiEnabled": true,
+    "nameEnabled": true,
+    "reactionsEnabled": true,
+    "firstTurnDelay": true,
+    "dmDelay": 5,
+    "shortDelay": 5,
+    "normalDelayMin": 5,
+    "normalDelayMax": 5,
+    "longDelayMin": 5,
+    "longDelayMax": 5,
+    "groupDelayMin": 5,
+    "groupDelayMax": 5,
+    "maxMessageChars": 4000,
+    "maxContextTurns": 6,
+    "maxReplyChars": 3500,
+    "longPromptBudget": 880,
+    "repeatSimilarityThreshold": 0.72,
+    "summaryMaxChars": 120,
+    "maxFallbacks": 2,
+    "maxAttempts": 3,
+    "disabledProviders": [],
+    "healthFailureThreshold": 3,
+    "healthBaseCooldownMs": 60000,
+    "healthMaxCooldownMs": 900000,
+    "rateUserPerMinute": 6,
+    "rateGroupPerMinute": 12,
+    "batchWindowMs": 2500,
+    "timeoutMs": 60000,
+    "retries": 2,
+    "maxSessions": 800,
+    "sessionTtlDays": 30,
+    "modules": {
+      "assistant": true,
+      "moderation": true,
+      "rewrite": true,
+      "translate": true,
+      "files": true,
+      "web": true,
+      "vision": true,
+      "image": true,
+      "sticker": true,
+      "imagesearch": true
+    },
+    "autohumanEnabled": true,
+    "autohumanAnalyseMs": 1500,
+    "autohumanGenerateMs": 2000,
+    "autohumanPreSendMs": 1500
+  },
+  "cmdAliases": {
+    "254107287140": {},
+    "254734641791": {}
+  },
+  "stickerCommands": {
+    "254107287140": {}
+  },
+  "sessionSettings": {
+    "254107287140": {
+      "antidelete": false,
+      "antidelete2": false,
+      "antidelete3": "",
+      "antidelete4": ""
+    },
+    "254734641791": {
+      "antidelete": false,
+      "antidelete2": false,
+      "antidelete3": "",
+      "antidelete4": ""
+    }
+  },
+  "statusAutomation": {
+    "avs": {
+      "enabled": true
+    },
+    "als": {
+      "enabled": true
+    },
+    "ars": {
+      "enabled": true,
+      "emoji": "😊"
+    }
+  },
+  "antiFeatures": {
+    "antidemote": {
+      "enabled": false
+    },
+    "antikick": {
+      "enabled": false
+    },
+    "antiadd": {
+      "enabled": false
+    },
+    "antipromote": {
+      "enabled": false
+    },
+    "antisticker": {
+      "enabled": false
+    },
+    "antiviewonce": {
+      "enabled": false
+    },
+    "antimedia": {
+      "enabled": false
+    },
+    "antimentionstatus": {
+      "enabled": false
+    },
+    "enforcement": {
+      "kick": true
+    }
+  },
+  "telegram": {
+    "mode": "bot",
+    "ownerId": "",
+    "maxTelegramAccounts": 100,
+    "maxSessionsPerAccount": 20,
+    "enabled": false
+  },
+  "version": "L2"
+}

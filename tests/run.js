@@ -1,0 +1,40 @@
+'use strict'
+
+/*
+ * DARKNOTE test runner.
+ *
+ *   node tests/run.js
+ *
+ * Exits non-zero when anything fails, so a shell `&&` or CI can gate on it.
+ * Every suite is a module exporting a function that receives the harness and
+ * may return a promise (the router suite drives async code).
+ */
+
+const harness = require('./harness')
+
+const suites = [
+    require('./ai-providers.test'),
+    require('./ai-router.test'),
+    require('./menu.test'),
+    require('./buttons.test'),
+    require('./autohuman.test'),
+    require('./timing.test'),
+    require('./status-author.test'),
+    require('./ytdl-stream.test'),
+    require('./weather.test'),
+    require('./presence.test'),
+    require('./security.test'),
+    require('./shazam.test')
+]
+
+;(async () => {
+    for (const suite of suites) {
+        try {
+            await suite(harness)
+        } catch (error) {
+            harness.section(suite.name || 'unnamed suite')
+            harness.ok('suite ran without throwing', false, error?.stack || String(error))
+        }
+    }
+    process.exit(harness.report() ? 0 : 1)
+})()
