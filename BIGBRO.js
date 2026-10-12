@@ -210,6 +210,60 @@ async function sendChannelButton(conn, m) {
     await conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id });
 }
 
+/*
+ * MENU DELIVERY — interactive, not the legacy buttonsMessage.
+ *
+ * `.menu` used to relay a legacy `buttonsMessage` (a locationMessage used as the
+ * header plus `buttons: [{ type: 1 }]`). Current WhatsApp clients no longer
+ * render that type at all: the relay SUCCEEDS, the console logs nothing wrong,
+ * and the user sees an empty chat. That is exactly the "menu is not displaying"
+ * symptom.
+ *
+ * This sends the same text through the interactiveMessage + nativeFlowMessage
+ * shape the project already relies on for cards, the channel button and the
+ * pairing code. The header image is optional: if the upload fails the card is
+ * still sent without it, and if the card itself cannot be built the menu goes
+ * out as plain text. The menu can therefore never be invisible.
+ */
+async function sendMenuCard(conn, m, text, buttons) {
+    const footer = 'DARKNOTE L2 • Bigbrother'
+
+    let media = null
+    try {
+        media = await prepareWAMessageMedia({ image: await getMenuThumb() }, { upload: conn.waUploadToServer })
+    } catch (error) {
+        console.error('[MENU] thumbnail upload failed, sending without a header image:', error?.message || error)
+    }
+
+    try {
+        const content = {
+            viewOnceMessage: {
+                message: {
+                    messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
+                    interactiveMessage: imNode(null, {
+                        header: imNode('Header', media?.imageMessage
+                            ? { title: 'DARKNOTE L2', hasMediaAttachment: true, ...media }
+                            : { title: 'DARKNOTE L2', hasMediaAttachment: false }),
+                        body: imNode('Body', { text }),
+                        footer: imNode('Footer', { text: footer }),
+                        nativeFlowMessage: imNode('NativeFlowMessage', {
+                            buttons: buttonsystem.nativeFlowButtons(buttons),
+                            messageParamsJson: ''
+                        })
+                    })
+                }
+            }
+        }
+        const built = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, quoted: m })
+        await conn.relayMessage(m.chat, built.message, { messageId: built.key.id })
+        return { ok: true, mode: 'interactive' }
+    } catch (error) {
+        console.error('[MENU] interactive card failed, falling back to text:', error?.message || error)
+        await conn.sendMessage(m.chat, { text }, { quoted: m })
+        return { ok: true, mode: 'text' }
+    }
+}
+
 async function sendSongCarousel(conn, m, results) {
     cleanupSongSelections();
     const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
@@ -1137,25 +1191,10 @@ module.exports = async (conn, m) => {
                 ai: (() => { try { return aiService.config.getAiSettings().chatbotEnabled ? 'ON' : 'OFF' } catch { return 'READY' } })()
             })
 
-            await conn.relayMessage(
-                m.chat,
-                {
-                    buttonsMessage: {
-                        locationMessage: {
-                            degreesLatitude: 0,
-                            degreesLongitude: 0,
-                            name: 'DARKNOTE L2',
-                            address: 'Bigbrother',
-                            jpegThumbnail: await getMenuThumb()
-                        },
-                        contentText: info.text,
-                        footerText: 'DARKNOTE L2 • Bigbrother',
-                        buttons: [{ buttonId: 'allmenu', buttonText: { displayText: '📚 All Menu' }, type: 1 }],
-                        headerType: 6
-                    }
-                },
-                { quoted: m, messageId: conn.generateMessageTag() }
-            )
+            // Modern interactive card (the legacy buttonsMessage no longer renders).
+            await sendMenuCard(conn, m, info.text, [
+                { id: 'allmenu', text: '📚 All Menu' }
+            ])
             break
         }
 
@@ -2417,52 +2456,22 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
         }
 
         case 'allmenu': {
-            await conn.relayMessage(
-        m.chat,
-        {
-            buttonsMessage: {
-                locationMessage: {
-                    degreesLatitude: 0,
-                    degreesLongitude: 0,
-                    name: 'DARKNOTE L2',
-                    address: 'Bigbrother',
-                    jpegThumbnail: await getMenuThumb()
-                },
-                contentText: menu.build(config, {
-                    mode: config.mode === 'self' ? 'SELF' : 'PUBLIC',
-                    number: String(m.sender).replace(/@.+/g, ''),
-                    runtime: (() => {
-                        const up = process.uptime()
-                        return `${Math.floor(up / 86400)}H ${Math.floor((up % 86400) / 3600)}J ${Math.floor((up % 3600) / 60)}M ${Math.floor(up % 60)}D`
-                    })()
-                }).text,
-                footerText: 'DARKNOTE L2 • Bigbrother',
-                buttons: [
-                    {
-                        buttonId: 'menu',
-                        buttonText: {
-                            displayText: 'ℹ️ Bot Info'
-                        },
-                        type: 1
-                    },
-                    {
-                        buttonId: 'owner',
-                        buttonText: {
-                            displayText: 'Owner Menu'
-                        },
-                        type: 1
-                    }
-                ],
-                headerType: 6
-            }
-        },
-        {
-            quoted: m,
-            messageId: conn.generateMessageTag()
+            // Modern interactive card; two buttons land on one row through the
+            // global button system. Button ids are unchanged, so the existing
+            // button-response handling still resolves them.
+            await sendMenuCard(conn, m, menu.build(config, {
+                mode: config.mode === 'self' ? 'SELF' : 'PUBLIC',
+                number: String(m.sender).replace(/@.+/g, ''),
+                runtime: (() => {
+                    const up = process.uptime()
+                    return `${Math.floor(up / 86400)}H ${Math.floor((up % 86400) / 3600)}J ${Math.floor((up % 3600) / 60)}M ${Math.floor(up % 60)}D`
+                })()
+            }).text, [
+                { id: 'menu', text: 'ℹ️ Bot Info' },
+                { id: 'owner', text: 'Owner Menu' }
+            ])
+            break
         }
-    )
-    break
-}
 
             case 'ytvideo': {
                 const query = args.join(' ').trim();
