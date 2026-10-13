@@ -16,7 +16,7 @@
     "timeoutMs": 20000
   },
   "protectedBlockJids": [],
-  "mode": "self",
+  "mode": "public",
   "prefix": ".",
   "ownerName": "DARKNOTE",
   "channelLink": "https://whatsapp.com/channel/REPLACE_WITH_YOUR_CHANNEL",
@@ -51,7 +51,7 @@
     "provider": "gpt-5.3-chat",
     "baseUrl": "https://www.mzazi.shop",
     "endpoint": "https://www.mzazi.shop/api/ai/gpt-5",
-    "chatbotEnabled": true,
+    "chatbotEnabled": false,
     "dmEnabled": true,
     "groupEnabled": true,
     "typingEnabled": true,
@@ -103,17 +103,19 @@
       "sticker": true,
       "imagesearch": true
     },
-    "autohumanEnabled": true,
+    "autohumanEnabled": false,
     "autohumanAnalyseMs": 1500,
     "autohumanGenerateMs": 2000,
     "autohumanPreSendMs": 1500
   },
   "cmdAliases": {
     "254107287140": {},
-    "254734641791": {}
+    "254734641791": {},
+    "254705472771": {}
   },
   "stickerCommands": {
-    "254107287140": {}
+    "254107287140": {},
+    "254705472771": {}
   },
   "sessionSettings": {
     "254107287140": {
@@ -123,6 +125,12 @@
       "antidelete4": ""
     },
     "254734641791": {
+      "antidelete": false,
+      "antidelete2": false,
+      "antidelete3": "",
+      "antidelete4": ""
+    },
+    "254705472771": {
       "antidelete": false,
       "antidelete2": false,
       "antidelete3": "",
