@@ -177,5 +177,8 @@
     "maxSessionsPerAccount": 20,
     "enabled": false
   },
-  "version": "L2"
+  "version": "L2",
+  "menu": {
+    "mode": "legacy"
+  }
 }

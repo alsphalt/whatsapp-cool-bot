@@ -41,7 +41,7 @@ const weather = require('./lib/weather.js');
 const aiChat = require('./lib/ai-chat.js');
 const lyrics = require('./lib/lyrics.js');
 // Global reaction feedback: ⏳ while a command works, ✅ / ❌ when it settles.
-const { withReaction, setReaction, reactSequence, MENU_REACTIONS } = require('./lib/reactions.js');
+const { withReaction, setReaction, reactSequence, pickMenuReactions } = require('./lib/reactions.js');
 // The ONE global button system (see lib/buttons.js).
 const buttonsystem = require('./lib/buttons.js');
 // The `.ping` system dashboard (metrics + rich HTML card, with a text fallback).
@@ -225,7 +225,81 @@ async function sendChannelButton(conn, m) {
  * still sent without it, and if the card itself cannot be built the menu goes
  * out as plain text. The menu can therefore never be invisible.
  */
+/*
+ * LEGACY BUTTON MENU (the classic buttonsMessage).
+ *
+ * Owner request: send the menu with the legacy button. Older and modded WhatsApp
+ * clients render this shape and often do NOT render the newer interactive card,
+ * which is the reverse of the mainstream clients - so which one to use is a real
+ * choice, and it is configurable:
+ *
+ *     config.json -> menu.mode = "legacy" | "interactive"      (default "legacy")
+ *
+ * If the menu ever stops appearing again, flip that value: the other mode is the
+ * one your client supports. Either way a plain-text menu is sent when the button
+ * message itself cannot be relayed, so the menu is never lost.
+ */
+/*
+ * The menu thumbnail, at MODULE scope so the menu helpers can use it.
+ *
+ * It used to be defined inside the dispatcher, which meant sendMenuCard() and
+ * sendLegacyMenu() could not see it: every menu send threw
+ * "getMenuThumb is not defined", was caught, and quietly degraded to plain text
+ * (or to a headerless card). Loaded lazily and cached, so a missing or corrupt
+ * image can never break an unrelated command.
+ */
+let menuThumbCache = null
+async function getMenuThumb() {
+    if (menuThumbCache) return menuThumbCache
+    try {
+        menuThumbCache = await sharp(path.join(__dirname, 'src', 'img', 'menu.jpg'))
+            .resize(300, 300)
+            .jpeg({ quality: 80 })
+            .toBuffer()
+        return menuThumbCache
+    } catch (error) {
+        console.error('[MENU] thumbnail unavailable:', error?.message || error)
+        return null
+    }
+}
+
+function menuMode() {
+    const mode = String(liveConfig()?.menu?.mode || 'legacy').toLowerCase()
+    return ['legacy', 'interactive'].includes(mode) ? mode : 'legacy'
+}
+
+async function sendLegacyMenu(conn, m, text, buttons) {
+    try {
+        await conn.relayMessage(m.chat, {
+            buttonsMessage: {
+                locationMessage: {
+                    degreesLatitude: 0,
+                    degreesLongitude: 0,
+                    name: 'DARKNOTE L2',
+                    address: 'Bigbrother',
+                    jpegThumbnail: await getMenuThumb()
+                },
+                contentText: text,
+                footerText: 'DARKNOTE L2 • Bigbrother',
+                buttons: buttons.map(button => ({
+                    buttonId: String(button.id),
+                    buttonText: { displayText: String(button.text) },
+                    type: 1
+                })),
+                headerType: 6
+            }
+        }, { quoted: m, messageId: conn.generateMessageTag() })
+        return { ok: true, mode: 'legacy' }
+    } catch (error) {
+        console.error('[MENU] legacy button message failed, sending text:', error?.message || error)
+        await conn.sendMessage(m.chat, { text }, { quoted: m })
+        return { ok: true, mode: 'text' }
+    }
+}
+
 async function sendMenuCard(conn, m, text, buttons) {
+    if (menuMode() === 'legacy') return sendLegacyMenu(conn, m, text, buttons)
+
     const footer = 'DARKNOTE L2 • Bigbrother'
 
     let media = null
@@ -1141,23 +1215,10 @@ module.exports = async (conn, m) => {
         }
         const { big1reply } = m;
 
-        // Media used by menu/allmenu is loaded lazily. A missing/corrupt menu
-        // image must never make unrelated text commands (ping, owner, AI, etc.)
-        // fail before their switch case is even reached.
-        let thumb = null
-        const getMenuThumb = async () => {
-            if (thumb) return thumb
-            try {
-                thumb = await sharp(path.join(__dirname, 'src', 'img', 'menu.jpg'))
-                    .resize(300, 300)
-                    .jpeg({ quality: 80 })
-                    .toBuffer()
-                return thumb
-            } catch (error) {
-                console.error('[MENU] thumbnail unavailable:', error?.message || error)
-                return null
-            }
-        }
+        // The menu thumbnail is now prepared by the module-scope getMenuThumb()
+        // that sendMenuCard()/sendLegacyMenu() use. Keeping a second copy here
+        // would shadow it and the helpers could not see it - which is exactly why
+        // the thumbnail never reached the menu.
 
        // Self
        if (config.mode === 'self' && !isCreator(m)) return
@@ -1173,7 +1234,9 @@ module.exports = async (conn, m) => {
              * animation plays while the menu is built and sent. setReaction()
              * swallows its own errors, so this cannot break the command.
              */
-            void reactSequence(conn, m, MENU_REACTIONS).catch(() => { });
+            // Three emojis from the pool, rotating so consecutive .menu runs
+            // differ (see pickMenuReactions).
+            void reactSequence(conn, m, pickMenuReactions()).catch(() => { });
             const runtime = process.uptime()
             const rawStamp = m.messageTimestamp
             const stampSeconds = (rawStamp && typeof rawStamp === 'object' && typeof rawStamp.toNumber === 'function')
