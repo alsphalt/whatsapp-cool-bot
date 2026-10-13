@@ -207,7 +207,9 @@ async function sendChannelButton(conn, m) {
         userJid: conn.user?.id,
         quoted: m
     });
-    await conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id });
+    // The interactive nodes are REQUIRED: without them WhatsApp renders nothing
+    // and the relay still reports success (see lib/buttons.js interactiveNodes).
+    await conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id, ...buttonsystem.interactiveNodes() });
 }
 
 /*
@@ -268,7 +270,92 @@ function menuMode() {
     return ['legacy', 'interactive'].includes(mode) ? mode : 'legacy'
 }
 
+/*
+ * Quoted-reply context, so the menu card threads under the message that asked
+ * for it. relayMessage() has no `quoted` option (the old code passed one and it
+ * was ignored), so the reply link has to travel in the message's contextInfo.
+ * Returns null rather than a half-built object, so a malformed context can never
+ * be attached to the card.
+ */
+function quotedContext(m) {
+    try {
+        const id = m?.key?.id
+        if (!id || !m?.message) return null
+        return {
+            stanzaId: id,
+            participant: m.key?.participant || m.sender || m.chat,
+            quotedMessage: m.message
+        }
+    } catch {
+        return null
+    }
+}
+
+/*
+ * LEGACY BUTTON MENU — relayed through the fork's own ButtonV2 builder.
+ *
+ * WHY THIS CHANGED. The previous version hand-built a raw `buttonsMessage` and
+ * relayed it with no additional nodes. The relay always SUCCEEDED and logged
+ * nothing at all — but WhatsApp rendered nothing, which is exactly the "menu
+ * does not respond" symptom: reactions fired, and no card ever appeared.
+ *
+ * The missing half ships with the fork. ButtonV2.send() attaches
+ *
+ *     biz > interactive(type=native_flow) > native_flow(v=9, name=mixed)
+ *
+ * which is what makes a button card actually render, and its build() emits the
+ * very same legacy buttonsMessage shape this function was reaching for
+ * (locationMessage header + headerType 6 + type-1 buttons). The card therefore
+ * keeps the legacy look while finally being deliverable.
+ *
+ * MENU CONTENT IS UNCHANGED. The body text still comes from lib/menu.js through
+ * the same `text` argument, and the buttons are the same id/text pairs, so
+ * `.menu`, `.allmenu`, the command registry and the button dispatcher all behave
+ * exactly as before. Only the delivery changed.
+ *
+ * THUMBNAIL. ButtonV2.setThumbnail() re-encodes through Toolkit.resize(), which
+ * returns PNG — a 184 KB PNG in a field named jpegThumbnail. setRawThumbnail()
+ * passes our own sharp-encoded JPEG straight through instead: correct format and
+ * about 22 KB. The raw path is used deliberately.
+ */
 async function sendLegacyMenu(conn, m, text, buttons) {
+    // 1. Preferred: the fork's ButtonV2 card (the MZAZI button layout).
+    try {
+        // Read lazily: the builder proxy pulls in sharp/fluent-ffmpeg on first
+        // access, so a build without them must fail only here, not at require.
+        const ButtonV2 = baileys?.ButtonV2
+        if (typeof ButtonV2 === 'function') {
+            const cfg = liveConfig() || {}
+            const card = new ButtonV2(conn)
+
+            // Header: bot identity on top, the paired number underneath — the
+            // same name/number pair the legacy location header renders.
+            const number = String(conn?.user?.id || '').split('@')[0].split(':')[0]
+            card.setTitle(`${cfg.botName || 'DARKNOTE'} ${cfg.version || 'L2'}`)
+            card.setSubtitle(number ? `+${number}` : String(cfg.ownerName || 'Bigbrother'))
+            card.setBody(String(text))
+            card.setFooter('DARKNOTE L2 • Bigbrother')
+
+            const thumb = await getMenuThumb()
+            if (thumb) card.setRawThumbnail(Buffer.from(thumb).toString('base64'))
+
+            for (const button of buttons || []) {
+                card.addButton(String(button.text), String(button.id))
+            }
+
+            const context = quotedContext(m)
+            if (context) card.setContextInfo(context)
+
+            const sent = await card.send(m.chat, {})
+            console.log(`[MENU] ButtonV2 card sent to ${String(m.chat).split('@')[0]} with ${(buttons || []).length} button(s) (id ${sent?.key?.id || '?'})`)
+            return { ok: true, mode: 'legacy' }
+        }
+        console.warn('[MENU] this fork exposes no ButtonV2; using the raw buttonsMessage')
+    } catch (error) {
+        console.error('[MENU] ButtonV2 card failed, trying the raw buttonsMessage:', error?.message || error)
+    }
+
+    // 2. Fallback: the original hand-built buttonsMessage.
     try {
         await conn.relayMessage(m.chat, {
             buttonsMessage: {
@@ -288,7 +375,7 @@ async function sendLegacyMenu(conn, m, text, buttons) {
                 })),
                 headerType: 6
             }
-        }, { quoted: m, messageId: conn.generateMessageTag() })
+        }, { quoted: m, messageId: conn.generateMessageTag(), ...buttonsystem.interactiveNodes() })
         return { ok: true, mode: 'legacy' }
     } catch (error) {
         console.error('[MENU] legacy button message failed, sending text:', error?.message || error)
@@ -329,7 +416,8 @@ async function sendMenuCard(conn, m, text, buttons) {
             }
         }
         const built = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, quoted: m })
-        await conn.relayMessage(m.chat, built.message, { messageId: built.key.id })
+        // The interactive nodes are REQUIRED here too.
+        await conn.relayMessage(m.chat, built.message, { messageId: built.key.id, ...buttonsystem.interactiveNodes() })
         return { ok: true, mode: 'interactive' }
     } catch (error) {
         console.error('[MENU] interactive card failed, falling back to text:', error?.message || error)
@@ -343,18 +431,29 @@ async function sendSongCarousel(conn, m, results) {
     const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
     songSelections.set(songKey(m, token), { createdAt: Date.now(), results });
 
-    const cards = [];
+    /*
+     * Named cardList, NOT `cards`: the module-level `cards` (lib/cards.js) is used
+     * below for its image resolver, and a local `cards` would shadow it.
+     */
+    const cardList = [];
+    const defaultImage = cards.configuredImage();
     for (let i = 0; i < results.length; i++) {
         const r = results[i];
-        let media;
-        try {
-            media = await prepareWAMessageMedia({ image: { url: r.thumbnail } }, { upload: conn.waUploadToServer });
-        } catch {
-            media = null;
-        }
-        if (!media?.imageMessage) continue;
-        cards.push({
-            header: imNode('Header', { title: `🎵 ${i + 1}. ${r.title.slice(0, 55)}`, hasMediaAttachment: true, ...media }),
+        /*
+         * A card is NEVER dropped because its thumbnail failed. The card carries
+         * the AUDIO button, so dropping one would silently remove a result and
+         * break the index -> song mapping that the button id depends on, while
+         * dropping ALL of them threw and failed the whole command. This mirrors
+         * lib/cards.js: try the item's own image, then the configured default,
+         * and only then send the card headerless.
+         */
+        let imageMessage = await cards.resolveCardImage(conn, { url: r.thumbnail });
+        if (!imageMessage && defaultImage) imageMessage = await cards.resolveCardImage(conn, defaultImage);
+
+        cardList.push({
+            header: imNode('Header', imageMessage
+                ? { title: `🎵 ${i + 1}. ${r.title.slice(0, 55)}`, hasMediaAttachment: true, imageMessage: { ...imageMessage } }
+                : { title: `🎵 ${i + 1}. ${r.title.slice(0, 55)}`, hasMediaAttachment: false }),
             body: imNode('Body', { text: `${r.author || 'YouTube'}\n⏱ ${r.timestamp || 'Unknown'}\n👁 ${Number(r.views || 0).toLocaleString()} views` }),
             footer: imNode('Footer', { text: 'DARKNOTE L2 • YouTube Music' }),
             nativeFlowMessage: imNode('NativeFlowMessage', {
@@ -363,22 +462,24 @@ async function sendSongCarousel(conn, m, results) {
             })
         });
     }
-    if (!cards.length) throw new Error('Unable to prepare YouTube thumbnails.');
+    if (!cardList.length) throw new Error('Unable to build the song carousel.');
 
     const content = {
         viewOnceMessage: {
             message: {
                 messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
                 interactiveMessage: imNode(null, {
-                    body: imNode('Body', { text: `🎶 *SONG SEARCH*\n\nFound ${cards.length} results for your search.\nSwipe horizontally and tap *🎧 AUDIO* on the song you want.` }),
+                    body: imNode('Body', { text: `🎶 *SONG SEARCH*\n\nFound ${cardList.length} results for your search.\nSwipe horizontally and tap *🎧 AUDIO* on the song you want.` }),
                     footer: imNode('Footer', { text: 'Swipe → choose → AUDIO' }),
-                    carouselMessage: imNode('CarouselMessage', { cards })
+                    carouselMessage: imNode('CarouselMessage', { cards: cardList })
                 })
             }
         }
     };
     const msg = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, quoted: m });
-    await conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id });
+    // The interactive nodes are REQUIRED: without them WhatsApp renders nothing
+    // and the relay still reports success (see lib/buttons.js interactiveNodes).
+    await conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id, ...buttonsystem.interactiveNodes() });
 }
 
 
@@ -388,21 +489,21 @@ async function sendYtVideoCarousel(conn, m, results, query) {
     const key = ytVideoKey(m, requestId);
     ytVideoSelections.set(key, { createdAt: Date.now(), userJid: m.sender, chat: m.chat, requestId, query, results });
 
-    const cards = [];
+    // Named cardList, not `cards`: see sendSongCarousel - the module-level
+    // `cards` (lib/cards.js) provides the image resolver used below.
+    const cardList = [];
+    const defaultImage = cards.configuredImage();
     for (let i = 0; i < results.length; i++) {
         const r = results[i];
-        let media = null;
-        try {
-            media = await prepareWAMessageMedia({ image: { url: r.thumbnail } }, { upload: conn.waUploadToServer });
-        } catch (error) {
-            console.error(`[YTVIDEO] Thumbnail ${i + 1} failed:`, error?.message || error);
-        }
-        if (!media?.imageMessage) continue;
-        cards.push({
+        // Same rule as the song carousel: a failed thumbnail never drops a card,
+        // because the SELECT VIDEO button and its index mapping live in the card.
+        let imageMessage = await cards.resolveCardImage(conn, { url: r.thumbnail });
+        if (!imageMessage && defaultImage) imageMessage = await cards.resolveCardImage(conn, defaultImage);
+        cardList.push({
             header: imNode('Header', {
                 title: `🎬 ${i + 1}. ${String(r.title || 'YouTube video').slice(0, 55)}`,
-                hasMediaAttachment: true,
-                ...media
+                hasMediaAttachment: !!imageMessage,
+                ...(imageMessage ? { imageMessage: { ...imageMessage } } : {})
             }),
             body: imNode('Body', {
                 text: `${r.author || 'YouTube'}\n⏱ ${r.timestamp || formatVideoDuration(r.duration)}\n👁 ${Number(r.views || 0).toLocaleString()} views\n\nSelect this video to download it.`
@@ -421,9 +522,9 @@ async function sendYtVideoCarousel(conn, m, results, query) {
         });
     }
 
-    if (!cards.length) {
+    if (!cardList.length) {
         ytVideoSelections.delete(key);
-        throw new Error('Unable to prepare YouTube thumbnails.');
+        throw new Error('Unable to build the YouTube video carousel.');
     }
 
     const content = {
@@ -432,16 +533,18 @@ async function sendYtVideoCarousel(conn, m, results, query) {
                 messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
                 interactiveMessage: imNode(null, {
                     body: imNode('Body', {
-                        text: `🎬 *YOUTUBE VIDEO SEARCH*\n\nFound ${cards.length} video${cards.length === 1 ? '' : 's'} for: *${String(query).slice(0, 80)}*\nSwipe horizontally and tap *🎬 SELECT VIDEO*.`
+                        text: `🎬 *YOUTUBE VIDEO SEARCH*\n\nFound ${cardList.length} video${cardList.length === 1 ? '' : 's'} for: *${String(query).slice(0, 80)}*\nSwipe horizontally and tap *🎬 SELECT VIDEO*.`
                     }),
                     footer: imNode('Footer', { text: 'Swipe → choose → download' }),
-                    carouselMessage: imNode('CarouselMessage', { cards })
+                    carouselMessage: imNode('CarouselMessage', { cards: cardList })
                 })
             }
         }
     };
     const msg = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, quoted: m });
-    await conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id });
+    // The interactive nodes are REQUIRED: without them WhatsApp renders nothing
+    // and the relay still reports success (see lib/buttons.js interactiveNodes).
+    await conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id, ...buttonsystem.interactiveNodes() });
 }
 
 async function processSelectedYtVideo(conn, m, selected) {
@@ -969,7 +1072,8 @@ async function sendPairProgress(conn, m, phone) {
             }
         }
         const built = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, quoted: m })
-        await conn.relayMessage(m.chat, built.message, { messageId: built.key.id })
+        // The interactive nodes are REQUIRED here too.
+        await conn.relayMessage(m.chat, built.message, { messageId: built.key.id, ...buttonsystem.interactiveNodes() })
     } catch (error) {
         console.error('[PAIR] copy-code button failed:', error?.stack || error)
         await conn.sendMessage(m.chat, { text: `${finalText}\n\n📋 Copy the code manually: ${code}` }, { quoted: m })

@@ -35,6 +35,24 @@ auth_tg_*/
 # per session.
 sessions/
 
-# Local secret configuration
-config.js
-api.js
+# Local secret configuration.
+#
+# ANCHORED WITH A LEADING SLASH ON PURPOSE. A bare `config.js` pattern matches at
+# ANY directory depth, so the previous unanchored rule silently excluded
+# ai/config.js - along with the root api.js it was meant to protect - from the
+# repository. Nine modules require ai/config.js at load time (ai/index.js:27 is
+# reached from BIGBRO.js:54), so a fresh clone could not boot at all:
+#
+#     Error: Cannot find module './config'
+#
+# The slash restricts this to the project root, where a genuinely local secret
+# file belongs.
+#
+# api.js is deliberately NOT ignored. It is tracked and reads the environment
+# only, so that lib/lyrics.js (which requires it at load time) works on a clean
+# clone. Real keys belong in .env - see .env.example. Never put a key in api.js.
+/config.js
+
+# Runtime scratch from run-bot.sh / pair-code.sh (FIFO + console logs).
+.stdin.fifo
+logs/
