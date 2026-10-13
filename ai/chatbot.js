@@ -214,11 +214,28 @@ function isBotMentioned(conn, m) {
 }
 
 function hasExplicitTrigger(text) {
-    return /^darknote\b/i.test(String(text || '').trim())
+    const value = String(text || '').trim()
+    /*
+     * Two ways to summon the assistant explicitly:
+     *   "darknote ..."  - the original leading trigger, kept as-is.
+     *   "jimmy ..."     - the conversational name, accepted ANYWHERE in the
+     *                     sentence, because people write "hy jimmy", "jimmy hy"
+     *                     and "hy jimy how is ur day" alike. Misspellings count
+     *                     (see personality.NAME_TRIGGER).
+     *
+     * An explicit trigger means a group does not ALSO need a real @mention.
+     */
+    return /^darknote\b/i.test(value) || personality.NAME_TRIGGER.test(value)
 }
 
 function stripTrigger(text) {
-    return String(text || '').trim().replace(/^darknote\b[,:]?\s*/i, '').trim()
+    return String(text || '')
+        .trim()
+        .replace(/^darknote\b[,:]?\s*/i, '')
+        .replace(personality.NAME_TRIGGER, ' ')
+        .replace(/^[\s,:;.!-]+/, '')
+        .replace(/\s+/g, ' ')
+        .trim()
 }
 
 function speakerName(conn, m) {

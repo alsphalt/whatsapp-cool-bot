@@ -124,7 +124,10 @@ function classify(text) {
      * anchored to an imperative verb. Stripping here makes classify correct on
      * raw text on its own, and stripping twice is a no-op.
      */
-    const raw = display.clean(String(text || '').replace(/^darknote\b[,:]?\s*/i, ''), 400)
+    // "jimmy" is the conversational name and now also introduces an AI request
+    // ("jimmy create a sticker of a wolf"), so it is stripped alongside the
+    // original "darknote" trigger.
+    const raw = display.clean(String(text || '').replace(/^(?:darknote|jimmy|jimy|jimmi|jimi|jimmie)\b[,:]?\s*/i, ''), 400)
     if (!raw) return { intent: 'chat', prompt: '', reason: 'empty' }
 
     for (const pattern of PATTERNS) {
@@ -333,7 +336,9 @@ async function route(conn, m, context = {}) {
      *                   working while `.chatbot off`.
      *   chatbot ON      then a clear tool imperative may be acted on by itself.
      */
-    const directed = /^darknote\b/i.test(text)
+    // A leading "jimmy" is just as direct as a leading "darknote" for an AI
+    // request, so both are honoured while the chatbot is off.
+    const directed = /^(?:darknote|jimmy|jimy|jimmi|jimi|jimmie)\b/i.test(text)
     const chatbotOn = Boolean(config.getAiSettings().chatbotEnabled)
     const mentioned = Boolean(m?.__darknoteMentioned)
 

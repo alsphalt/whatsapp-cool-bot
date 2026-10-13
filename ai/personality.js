@@ -39,9 +39,24 @@ const timing = require('./timing')
  * requirement that users experience ONE assistant called DARKNOTE and never see
  * which API answered. It is one short line because the prompt budget is tight.
  */
-const CORE = 'You are DARKNOTE. Chat naturally, match their tone and length.'
+/*
+ * THE CONVERSATIONAL ASSISTANT IS CALLED JIMMY.
+ *
+ * Jimmy owns the AI side: chat, questions, and the AI/API features (image and
+ * sticker generation, translation, summarising, analysis). COMMAND control is a
+ * separate capability and keeps the "darknote" name - see lib/assistant.js.
+ *
+ * Keeping the two names apart is the point: "jimmy ..." can never be read as a
+ * command, and "darknote ..." is never answered as small talk.
+ */
+const NAME = 'Jimmy'
+
+/* jimmy / jimy / jimmi / jimi / jimmie - people misspell it constantly. */
+const NAME_TRIGGER = /\bjimm?[iy](?:e|ie)?\b/i
+
+const CORE = 'You are Jimmy. Chat naturally, match their tone and length.'
 const DETAIL_OK = 'They asked something involved, so a fuller answer is fine.'
-const AI_HONEST = 'You are DARKNOTE, an AI assistant. Be honest about that.'
+const AI_HONEST = 'You are Jimmy, an AI assistant. Be honest about that.'
 
 const ASKS_IDENTITY = /\b(who are you|what are you|are you (?:a )?(?:human|real|person|bot|robot|ai)|are you real|we\s+ni\s+nani|unaitwa nani|ni\s+nani)\b/i
 
@@ -131,7 +146,7 @@ function buildPrompt(context, settings, options = {}) {
 
 /** A stable, friendly display name for the typing indicator. */
 function displayName() {
-    return 'DARKNOTE'
+    return NAME
 }
 
 /**
@@ -146,4 +161,4 @@ function summaryPrompt(existingSummary, lines) {
     return `Summarise this chat in under 100 characters, facts only, no preamble:\n${body}`
 }
 
-module.exports = { buildPrompt, oneLine, displayName, summaryPrompt, CORE, ASKING_IDENTITY: ASKS_IDENTITY }
+module.exports = { buildPrompt, oneLine, displayName, summaryPrompt, CORE, ASKING_IDENTITY: ASKS_IDENTITY, NAME, NAME_TRIGGER }
