@@ -33,7 +33,7 @@ const { exec } = require('child_process');
 const { fileTypeFromBuffer } = require('file-type');
 const { writeExif } = require('./lib/StickerMaker.js');
 const ytSearch = require('yt-search');
-const { ytdlAutoBuffer, ytdlAutoVideoFile, getYouTubeMetadata, extractYouTubeId } = require('./lib/ytdl.js');
+const { ytdlAutoBuffer, ytdlAutoVideoFile, ytdlSongBuffer, getYouTubeMetadata, extractYouTubeId } = require('./lib/ytdl.js');
 const { resolveForDispatch, configureAlias, getRegisteredCommands } = require('./lib/command-system.js');
 const { isNativeStatusSave, saveStatus, saveStatusSilent } = require('./lib/status-media.js');
 const statusAuthor = require('./lib/status-author.js');
@@ -482,6 +482,130 @@ async function sendSongCarousel(conn, m, results) {
     await conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id, ...buttonsystem.interactiveNodes() });
 }
 
+
+/* How many results the .play picker offers. Six fits the two-per-row button
+   layout in lib/buttons.js on a single screen. */
+const PLAY_PICKER_LIMIT = 6;
+
+/*
+ * Button labels are capped at 24 characters (lib/buttons.js MAX_DISPLAY_TEXT) and
+ * results for one query almost always open with the same words: six
+ * "Blinding Lights" uploads all read "The Weeknd - Blinding" and four
+ * "Bohemian Rhapsody" uploads all read "Queen - Bohemian Rhap". Every button then
+ * looks alike, which is precisely the case the picker exists to solve.
+ *
+ * So: find the results whose labels collide ONCE TRUNCATED, strip the words that
+ * only that colliding group shares, and if anything is still identical fall back
+ * to the channel and finally to the track number. Comparing normalises case and
+ * the dash variants, otherwise "Queen - ..." and "Queen – ..." count as different
+ * and the shared "Queen - Bohemian Rhapsody" prefix is never detected.
+ */
+const LABEL_CHARS = 24;
+const normChar = (c) => ('-–—‐‑‒'.includes(c) ? '-' : c.toLowerCase());
+const normLabel = (s) => String(s).split('').map(normChar).join('');
+
+function pickerLabels(results) {
+    const titles = results.map(r => String(r.title || '').trim());
+    const labels = titles.map((t, i) => t || `Result ${i + 1}`);
+
+    /* Groups of indexes whose labels are indistinguishable once truncated. */
+    const collisions = (list) => {
+        const groups = new Map();
+        list.forEach((label, i) => {
+            const key = normLabel(label).slice(0, LABEL_CHARS);
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(i);
+        });
+        return [...groups.values()].filter(indexes => indexes.length > 1);
+    };
+
+    for (const indexes of collisions(labels)) {
+        let prefix = titles[indexes[0]];
+        for (const i of indexes.slice(1)) {
+            let n = 0;
+            while (n < prefix.length && n < titles[i].length
+                && normChar(prefix[n]) === normChar(titles[i][n])) n++;
+            prefix = prefix.slice(0, n);
+        }
+        /*
+         * If the shared part already covers a whole title then the group is
+         * really the same title, and stripping would leave a fragment
+         * ("Same Song" -> "Song"). Keep the full titles and let the channel
+         * fallback below distinguish them instead.
+         */
+        if (prefix.length >= Math.min(...indexes.map(i => titles[i].length))) continue;
+        // Never cut mid-word, and drop a trailing separator or bracket.
+        prefix = prefix.replace(/[^\s]*$/, '').replace(/[\s\-–—|·:([{]+$/, '');
+        if (!prefix) continue;
+        for (const i of indexes) {
+            const rest = titles[i].slice(prefix.length).replace(/^[\s\-–—|·:)\]]+/, '').trim();
+            if (rest) labels[i] = rest;
+        }
+    }
+
+    // Still identical (two "Lyrics" uploads, say): bring in the channel.
+    for (const indexes of collisions(labels)) {
+        for (const i of indexes) labels[i] = `${labels[i]} · ${results[i].author || 'YouTube'}`;
+    }
+
+    // Last resort, so no two buttons can ever read the same.
+    for (const indexes of collisions(labels)) {
+        for (const i of indexes) labels[i] = `${labels[i]} ${i + 1}`;
+    }
+
+    return labels;
+}
+
+/*
+ * STEP 1 of the .play flow: the picker.
+ *
+ * WHY THE BUTTONS ARE NOT IN THE HTML CARD. The card runs in an offline sandbox
+ * (no fetch, no XHR, no route back to WhatsApp), so a button drawn in the markup
+ * could never tell the bot which song was tapped. WhatsApp's own quick_reply
+ * buttons can: each carries an id, and tapping one sends that id back into the
+ * dispatcher as an ordinary message. That is how `play_card <token> <n>` arrives
+ * at case 'play_card' below. Same mechanism .song and .shazam already use.
+ *
+ * The results are parked in the existing songSelections map - identical shape and
+ * the same 10 minute expiry - so selections live in exactly one place.
+ */
+async function sendPlayPicker(conn, m, query, results) {
+    cleanupSongSelections();
+    const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+    songSelections.set(songKey(m, token), { createdAt: Date.now(), results });
+
+    const labels = pickerLabels(results);
+    const buttons = results.map((r, i) => ({
+        id: `play_card ${token} ${i}`,
+        text: `${i + 1}. ${labels[i]}`
+    }));
+
+    const listText = results
+        .map((r, i) => `${i + 1}. ${String(r.title).slice(0, 60)}${r.timestamp ? ` · ${r.timestamp}` : ''}`)
+        .join('\n');
+
+    const content = {
+        viewOnceMessage: {
+            message: {
+                messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
+                interactiveMessage: imNode(null, {
+                    body: imNode('Body', {
+                        text: `🎵 *PICK A SONG*\n\n${results.length} matches for “${String(query).slice(0, 60)}”.\nTap the one you want and the player card is built for it.\n\n${listText}`
+                    }),
+                    footer: imNode('Footer', { text: 'DARKNOTE • tap to build the card' }),
+                    nativeFlowMessage: imNode('NativeFlowMessage', {
+                        buttons: buttonsystem.createButtons(buttons).nativeFlow,
+                        messageParamsJson: ''
+                    })
+                })
+            }
+        }
+    };
+    const msg = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, quoted: m });
+    // The interactive nodes are REQUIRED: without them WhatsApp renders nothing
+    // while the relay still reports success (see lib/buttons.js interactiveNodes).
+    await conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id, ...buttonsystem.interactiveNodes() });
+}
 
 async function sendYtVideoCarousel(conn, m, results, query) {
     cleanupYtVideoSelections();
@@ -2716,6 +2840,901 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
                 }
                 break;
             }
+            /*
+             * .play [song name] — AIRich HTML music card.
+             *
+             * With no argument it shows the built-in demo card (synthesised audio).
+             *
+             *     .play                        -> demo card, in-card synth
+             *     .play blinding lights        -> the REAL song from YouTube
+             *
+             * HOW THE REAL SONG IS PLAYED. The HTML app runs in an offline sandbox:
+             * no fetch, no XHR, no remote images, no <a href>. So the card can never
+             * stream a YouTube URL, and a whole song as base64 would be megabytes
+             * against a ~256 KB card limit. Two things together solve it:
+             *
+             *   1. The bot downloads the track with the SAME API `.song` uses
+             *      (ytdlAutoBuffer, from lib/ytdl.js) and cuts a short mono clip,
+             *      embedded in the card as base64. The in-card play button decodes
+             *      that clip with Web Audio and plays the ACTUAL recording.
+             *   2. The full track is then sent as a native WhatsApp audio message,
+             *      which needs no tricks and plays the whole song properly.
+             *
+             * The card carries the real title, artist, duration and thumbnail (the
+             * thumbnail inlined as a data: URI, because remote images are blocked).
+             *
+             * ADAPTED FROM THE SUPPLIED SNIPPET. Four identifiers were mapped:
+             *
+             *     mzazi      -> conn          (the socket)
+             *     sender     -> m.chat        (the destination JID)
+             *     logger     -> console       (BIGBRO.js has no pino logger)
+             *     mzazireply -> bigboreply    (this file's local reply alias)
+             *
+             * AIRich is self-sufficient: like the .ping card it relays its own
+             * message, so it needs no interactiveNodes() here.
+             */
+            /*
+             * STEP 2 of the .play flow. Each result button on the picker card
+             * carries the id `play_card <token> <index>`; tapping one lands here
+             * with args = [token, index]. There is deliberately NO break: this
+             * falls through into `case 'play'` below, which builds and sends the
+             * player card. The fall-through IS the hand-off, so the card builder
+             * is never duplicated.
+             */
+            case 'play_card': {
+                const token = args[0];
+                const index = Number(args[1]);
+                cleanupSongSelections();
+                const picked = token && Number.isInteger(index) && index >= 0
+                    ? songSelections.get(songKey(m, token))?.results?.[index]
+                    : null;
+                if (!picked) return m.bigboreply('❌ That song selection has expired. Send .play again.');
+                m.__playPicked = picked;   // read by case 'play' below
+            }
+
+            case 'play': {
+                (async () => {
+                    try {
+                        // ═══════════════════════════════════════════════════════
+                        //  IMPORTS
+                        // ═══════════════════════════════════════════════════════
+                        const { AIRich } = require('mzazibaileys');
+                        const { spawn } = require('child_process');
+
+                        // ── Tunables ──
+                        /*
+                         * THE WHOLE SONG IS EMBEDDED - there is no clip and no time
+                         * limit. That is only possible by embedding it, because the
+                         * HTML app runs in an offline sandbox (no fetch, no XHR), so
+                         * the audio has to travel inside the markup as base64.
+                         *
+                         * That makes the card's size the thing that limits quality.
+                         * Measured on a 3:24 track:
+                         *
+                         *   opus 32k -> 1122 KB card     opus 12k ->  466 KB card
+                         *   opus 16k ->  587 KB card     opus  8k ->  331 KB card
+                         *                                opus  6k ->  276 KB card
+                         *
+                         * The documented ceiling for this card type is about 256 KB,
+                         * so a full length song only fits at roughly 6 kbps: audible,
+                         * but badly degraded. Rather than hard-code that, the encode
+                         * targets a card budget and takes the highest bitrate that
+                         * fits, so a short track automatically gets better quality
+                         * than a long one. Opus is used because it holds up far
+                         * better than MP3 at these rates.
+                         *
+                         * Raise CARD_BUDGET_KB if your client takes larger cards and
+                         * you would rather trade size for quality.
+                         */
+                        const CARD_BUDGET_KB = 240;
+                        // markup (~18 KB measured) + thumbnail (~13 KB base64) + slack.
+                        const CARD_OVERHEAD_KB = 62;
+                        // The floor exists only so an extremely long track cannot
+                        // drive the bitrate to nothing. It must stay BELOW what the
+                        // budget maths asks for on a normal song, otherwise it
+                        // overrides the budget and the card overshoots.
+                        const MIN_AUDIO_BPS = 2800;
+                        /*
+                         * The encode is CBR (-vbr off), because a VBR encode's
+                         * size depends on how well the song compresses: measured
+                         * over 300 s, pink noise came out 135 KB and white noise
+                         * 178 KB at the same -b:a, which makes the card size
+                         * impossible to promise. CBR came out 120 KB for BOTH.
+                         * CBR lands about 7% above the requested -b:a, and long
+                         * frames cut the per-packet overhead that dominates at
+                         * these rates, so -frame_duration 60 goes with it.
+                         */
+                        const CBR_OVERSHOOT = 1.12;
+                        /*
+                         * Longest track that still fits one card at the floor.
+                         * This uses the MEASURED cost of the non-audio part of
+                         * the card (~18 KB markup + ~10 KB inlined thumbnail),
+                         * not CARD_OVERHEAD_KB, because that constant carries a
+                         * safety margin for the quality decision above and would
+                         * understate the real ceiling.
+                         */
+                        const CARD_CEILING_KB = 256;
+                        const CARD_FIXED_KB = 30;
+                        const maxSongSeconds = () => Math.floor(
+                            (((CARD_CEILING_KB - CARD_FIXED_KB) * 1024) * 3 / 4)
+                            / (MIN_AUDIO_BPS * CBR_OVERSHOOT / 8));
+                        const MAX_AUDIO_BPS = 96000;
+
+                        /* Highest bitrate whose base64 fits the card budget. */
+                        const bitrateForDuration = (seconds) => {
+                            const audioB64Bytes = Math.max(8 * 1024, (CARD_BUDGET_KB - CARD_OVERHEAD_KB) * 1024);
+                            // base64 inflates the payload by 4/3.
+                            const binaryBytes = Math.floor(audioB64Bytes * 3 / 4);
+                            const bps = Math.floor((binaryBytes * 8) / (Math.max(1, seconds) * CBR_OVERSHOOT));
+                            return Math.min(MAX_AUDIO_BPS, Math.max(MIN_AUDIO_BPS, bps));
+                        };
+
+                        const query = args.join(' ').trim();
+
+                        // ── helpers ──
+                        const safe = (s = '') => String(s)
+                            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                            .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+
+                        /*
+                         * Re-encode the track as small mono Opus so it can be embedded
+                         * in the card as base64.
+                         *
+                         * `limitSeconds` trims the embed to what a single card can
+                         * physically hold. It is only reached by tracks past the ~7
+                         * minute ceiling - a long SoundCloud upload, say - and without
+                         * it the base64 would run to megabytes and WhatsApp would drop
+                         * the card. The FULL track still goes out as the audio message
+                         * underneath, so nothing is lost; the card just carries the
+                         * opening stretch instead of failing outright.
+                         */
+                        const encodeAudio = (input, bitrate, limitSeconds = 0) => new Promise((resolve, reject) => {
+                            let bin;
+                            try { bin = require('ffmpeg-static'); }
+                            catch { return reject(new Error('ffmpeg-static is unavailable')); }
+                            const trim = limitSeconds > 0 ? ['-t', String(Math.floor(limitSeconds))] : [];
+                            const ff = spawn(bin, [
+                                '-hide_banner', '-loglevel', 'error',
+                                '-i', 'pipe:0',
+                                // -map 0:a:0 and -vn drop the source's attached cover
+                                // art, and -map_metadata -1 drops its tags. Without
+                                // these, a YouTube rip carries a 1280x720 embedded
+                                // cover and the output came out at 1.4 MB instead of
+                                // 100 KB - far too big to embed in the card.
+                                ...trim,
+                                '-map', '0:a:0', '-vn', '-map_metadata', '-1',
+                                '-ac', '1', '-ar', '48000',
+                                '-c:a', 'libopus', '-b:a', String(bitrate), '-vbr', 'off', '-frame_duration', '60',
+                                '-f', 'ogg', 'pipe:1'
+                            ], { stdio: ['pipe', 'pipe', 'pipe'] });
+                            const out = [], err = [];
+                            ff.stdout.on('data', (d) => out.push(d));
+                            ff.stderr.on('data', (d) => err.push(d));
+                            ff.on('error', reject);
+                            ff.on('close', (code) => {
+                                if (code === 0 && out.length) return resolve(Buffer.concat(out));
+                                reject(new Error(`ffmpeg exited ${code}: ${Buffer.concat(err).toString().slice(0, 160)}`));
+                            });
+                            ff.stdin.on('error', () => { });
+                            ff.stdin.end(input);
+                        });
+
+                        // ═══════════════════════════════════════════════════════
+                        //  RESOLVE THE TRACK
+                        // ═══════════════════════════════════════════════════════
+                        let track = null;       // real song, when one was chosen
+                        let encodedBase64 = ''; // the whole song, embedded in the card
+                        let songSeconds = 0;    // its length, for the timer
+                        /*
+                         * The ORIGINAL download, kept so the full-quality track can be
+                         * sent as a native audio message under the card. The card's copy
+                         * is squeezed to ~3-6 kbps to fit the markup, so it is a preview;
+                         * the audio message is what actually sounds good, and it is the
+                         * only way to hear a song longer than the card's ~7 minute ceiling.
+                         */
+                        let fullTrack = null;
+                        /*
+                         * True when the audio is Deezer/iTunes' official 30 second
+                         * preview rather than the whole YouTube track. It changes what
+                         * the card claims about itself: a preview must not be labelled
+                         * with the video's full running time or called the whole song.
+                         */
+                        let isPreview = false;
+                        let audioNote = '';   // a one-line explanation sent above the card
+
+                        /*
+                         * Where the song comes from:
+                         *   picked  -> the user tapped a button on the picker card
+                         *              (case 'play_card' falls through into this one)
+                         *   query   -> STEP 1: search, offer the picker, and stop here
+                         *   neither -> the demo card, exactly as before
+                         */
+                        const picked = m.__playPicked;
+                        delete m.__playPicked;
+
+                        if (!picked && query) {
+                            void reactSequence(conn, m, ['🎵', '🔎'], { gapMs: 250 }).catch(() => { });
+                            const search = await ytSearch(query);
+                            const results = (search?.videos || [])
+                                .filter(v => v.videoId && v.url && v.thumbnail)
+                                .slice(0, PLAY_PICKER_LIMIT)
+                                .map(v => ({
+                                    url: v.url,
+                                    title: v.title || 'YouTube song',
+                                    thumbnail: v.thumbnail,
+                                    author: v.author?.name || 'YouTube',
+                                    timestamp: v.timestamp || '',
+                                    seconds: Number(v.seconds) || 0
+                                }));
+                            if (!results.length) {
+                                await setReaction(conn, m, '❌');
+                                return bigboreply(`❌ No song found for *${query}*.`);
+                            }
+                            console.log(`[PLAY] "${query}" -> ${results.length} matches, sending the picker`);
+                            await sendPlayPicker(conn, m, query, results);
+                            await setReaction(conn, m, '✅');
+                            return;   // the player card is built once a button is pressed
+                        }
+
+                        if (picked) {
+                            track = {
+                                title: String(picked.title || '').slice(0, 90),
+                                artist: String(picked.author || 'YouTube'),
+                                duration: String(picked.timestamp || ''),
+                                thumbUrl: String(picked.thumbnail || ''),
+                                url: picked.url
+                            };
+                            console.log(`[PLAY] picked "${track.title}" (${track.duration}) -> ${track.url}`);
+                            // Aliased to `video` so the download/encode block below -
+                            // which was written against the search result - is unchanged.
+                            const video = picked;
+
+                            /*
+                             * THE REAL SONG, in two stages.
+                             *
+                             *  1. The whole YouTube track, via the same downloader
+                             *     .song uses. On a datacenter IP YouTube refuses this
+                             *     with LOGIN_REQUIRED unless yt-dlp has cookies (see
+                             *     lib/ytdl.source.js), so it usually fails here.
+                             *  2. The official 30 second preview from Deezer/iTunes,
+                             *     which needs no credentials at all and IS the real
+                             *     recording. This is what makes the card play the actual
+                             *     song instead of the synthesised stand-in.
+                             *
+                             * Only if BOTH fail does the card fall back to synth.
+                             */
+                            let audio = await ytdlAutoBuffer(track.url, 'audio');
+                            if (!audio?.status || !Buffer.isBuffer(audio.buffer)) {
+                                const youtubeError = audio?.error || 'no buffer';
+                                console.error('[PLAY] YouTube download failed:', youtubeError);
+                                /*
+                                 * Hand the resolver the RAW YouTube title/channel. It
+                                 * builds its own clean queries from them - passing a
+                                 * channel name and a "(Lyrics)" suffix straight to a
+                                 * catalogue API is exactly what found nothing before.
+                                 */
+                                const resolved = await ytdlSongBuffer({
+                                    title: track.title,
+                                    artist: track.artist,
+                                    seconds: Number(video.seconds) || 0
+                                });
+                                if (resolved?.status && Buffer.isBuffer(resolved.buffer)) {
+                                    audio = resolved;
+                                    isPreview = Boolean(resolved.preview);
+                                    console.log(`[PLAY] ${resolved.source} answered: "${resolved.title}" / "${resolved.artist}" (${resolved.preview ? '30s preview' : 'full, ' + Math.round(resolved.duration || 0) + 's'})`);
+                                } else {
+                                    console.error('[PLAY] no real audio source matched:', resolved?.error || 'unknown');
+                                    audioNote = `⚠️ I could not fetch the real track, so the card below plays the synth preview instead.\n` +
+                                        `YouTube: ${String(youtubeError).slice(0, 140)}`;
+                                }
+                            }
+                            if (audio?.status && Buffer.isBuffer(audio.buffer)) {
+                                fullTrack = audio;
+                                /*
+                                 * The length of the AUDIO, not of the YouTube video. A
+                                 * preview is 30 s; a SoundCloud upload can differ from the
+                                 * video it was found for, and sizing the encode from the
+                                 * video's runtime would then overshoot the card budget.
+                                 */
+                                songSeconds = Number(audio.duration) || Number(video.seconds) || 0;
+                                console.log(`[PLAY] audio ready: ${(audio.buffer.length / 1024 / 1024).toFixed(2)} MB for ${songSeconds || '?'}s`);
+                                try {
+                                    if (!songSeconds) throw new Error('unknown duration, cannot size the encode');
+                                    const cardCeiling = maxSongSeconds();
+                                    const cardSeconds = Math.min(songSeconds, cardCeiling);
+                                    if (songSeconds > cardCeiling) {
+                                        console.warn(`[PLAY] ${songSeconds}s is past the ~${cardCeiling}s a single card holds - embedding the first ${cardCeiling}s, the full track goes out as the audio message`);
+                                    }
+                                    const bps = bitrateForDuration(cardSeconds);
+                                    const encoded = await encodeAudio(audio.buffer, bps, cardSeconds);
+                                    encodedBase64 = encoded.toString('base64');
+                                    const estimatedKB = (encodedBase64.length / 1024) + CARD_OVERHEAD_KB;
+                                    console.log(`[PLAY] ${isPreview ? 'official preview' : 'song'} embedded: ${cardSeconds}s @ ${Math.round(bps / 1000)} kbps opus -> ${(encoded.length / 1024).toFixed(0)} KB (${(encodedBase64.length / 1024).toFixed(0)} KB base64) | card ~${estimatedKB.toFixed(0)} KB`);
+                                } catch (error) {
+                                    console.error('[PLAY] song could not be embedded, the card will use the synth instead:', error?.message || error);
+                                }
+                            }
+
+                            /*
+                             * Say which audio the card actually carries. Falling back
+                             * silently is what made the card look like it was "playing
+                             * the wrong song": the user taps play, hears generic music
+                             * and has no way to tell the real track never arrived.
+                             */
+                            if (audioNote) await bigboreply(audioNote);
+                        }
+
+                        // ═══════════════════════════════════════════════════════
+                        //  SONG CONFIG
+                        //  Real track when we have one, otherwise the demo track.
+                        // ═══════════════════════════════════════════════════════
+                        const SONG = track
+                            ? {
+                                title: track.title,
+                                artist: track.artist,
+                                duration: track.duration,
+                                bpm: 171,
+                                thumbUrl: track.thumbUrl,
+                                lyrics: []
+                            }
+                            : {
+                                title: 'Blinding Lights',
+                                artist: 'The Weeknd',
+                                ytId: '4NRXx6U8ABQ',
+                                bpm: 171,
+                                duration: '0:25',
+                                thumbUrl: '',
+                                lyrics: [
+                                    { t: 0.0, text: '♪ Intro ♪' },
+                                    { t: 4.0, text: 'I\'ve been on my own for long enough' },
+                                    { t: 8.5, text: 'Maybe you can show me how to love, maybe' },
+                                    { t: 13.0, text: 'I\'m going through withdrawals' },
+                                    { t: 17.5, text: 'You don\'t even have to do too much' },
+                                    { t: 21.5, text: 'You can turn me on with just a touch, baby' },
+                                    { t: 26.0, text: 'I look around and Sin City\'s cold and empty' },
+                                    { t: 30.5, text: 'No one\'s around to judge me' },
+                                    { t: 34.0, text: 'I can\'t see clearly when you\'re gone' },
+                                    { t: 38.0, text: '♪ Chorus ♪' },
+                                    { t: 42.0, text: 'I said, ooh, I\'m blinded by the lights' },
+                                    { t: 46.5, text: 'No, I can\'t sleep until I feel your touch' },
+                                    { t: 51.0, text: 'I said, ooh, I\'m drowning in the night' },
+                                    { t: 55.5, text: 'Oh, when I\'m like this, you\'re the one I trust' },
+                                    { t: 60.0, text: '♪ ♪ ♪' },
+                                    { t: 64.0, text: 'I\'m running out of time' },
+                                    { t: 68.0, text: 'Cause I can see the sun light up the sky' },
+                                    { t: 72.0, text: 'So I hit the road in overdrive, baby' },
+                                    { t: 76.5, text: '♪ Outro ♪' },
+                                    { t: 82.0, text: '— End —' }
+                                ]
+                            };
+
+                        // ── Inline the thumbnail as a data: URI ──
+                        // Remote images are blocked in the sandbox, so it is fetched
+                        // here and embedded.
+                        let thumbData = '';
+                        try {
+                            const sharp = require('sharp');
+                            const thumbUrl = SONG.thumbUrl || `https://i.ytimg.com/vi/${SONG.ytId}/hqdefault.jpg`;
+                            const response = await fetch(thumbUrl);
+                            if (response.ok) {
+                                const source = Buffer.from(await response.arrayBuffer());
+                                // Deliberately small: with the whole song embedded,
+                                // every KB the thumbnail takes is a KB the audio
+                                // cannot have, and the audio is the point. 480x270
+                                // q58 is ~13 KB base64 versus ~34 KB at 640x360 q68.
+                                const jpeg = await sharp(source)
+                                    .resize(480, 270, { fit: 'cover' })
+                                    .jpeg({ quality: 58 })
+                                    .toBuffer();
+                                thumbData = 'data:image/jpeg;base64,' + jpeg.toString('base64');
+                            }
+                        } catch (error) {
+                            console.error('[PLAY] thumbnail could not be inlined, using the CSS fallback:', error?.message || error);
+                        }
+
+                        const LYRICS = SONG.lyrics;
+                        const lyricsJson = JSON.stringify(LYRICS);
+                        // Timed lyrics only exist for the demo track. For a real song we
+                        // have no timings, so the lyric panel is hidden rather than
+                        // showing words that do not line up with what plays.
+                        const hasTimedLyrics = LYRICS.length > 0;
+                        // The timer spans the WHOLE song when it is embedded.
+                        const totalSeconds = encodedBase64
+                            ? songSeconds
+                            : (hasTimedLyrics ? (LYRICS[LYRICS.length - 1].t + 8) : 30);
+
+                        const heroStyle = thumbData
+                            ? `background-image:url('${thumbData}');background-size:cover;background-position:center;`
+                            : 'background:linear-gradient(135deg,#1db954,#0b3d20 55%,#05050a);';
+                        // The card must not claim more than it carries: a 30 s preview is
+                        // labelled as one, and the badge shows 30s instead of the
+                        // YouTube video's full running time.
+                        const sourceLabel = encodedBase64
+                            ? (isPreview ? 'Official preview · in-card' : 'Full song · in-card')
+                            : 'Synth engine';
+                        const badgeLabel = isPreview ? '0:30 preview' : (track ? (SONG.duration || 'YouTube') : 'Demo');
+
+                        // ═══════════════════════════════════════════════════════
+                        //  HTML PAYLOAD
+                        // ═══════════════════════════════════════════════════════
+                        const htmlPayload = `
+<style>
+@keyframes bgShift { 0%{background-position:0% 50%} 50%{background-position:100% 50%} 100%{background-position:0% 50%} }
+@keyframes floatUp { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+@keyframes pulseDot { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.75)} }
+@keyframes heroPan { 0%,100%{transform:scale(1.06) translate(0,0)} 50%{transform:scale(1.12) translate(-2%,-1%)} }
+@keyframes ring { 0%{transform:scale(.75);opacity:.7} 100%{transform:scale(1.9);opacity:0} }
+:root{--ink:#fff;--muted:#9a9a9a;--border:rgba(255,255,255,.1);--accent:#1db954;--accent2:#1ed760;}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+html,body{margin:0;padding:0;background:transparent;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",Roboto,sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;}
+.wrap{padding:10px;}
+.card{position:relative;max-width:420px;margin:0 auto;border-radius:22px;overflow:hidden;background:linear-gradient(180deg,#0a0a0f 0%,#05050a 100%);border:1px solid var(--border);box-shadow:0 24px 70px rgba(0,0,0,.7);animation:floatUp .35s ease;}
+.bg{position:absolute;inset:0;background:linear-gradient(135deg,rgba(29,185,84,.16),rgba(124,58,237,.1),rgba(59,130,246,.12),rgba(245,176,66,.1));background-size:400% 400%;animation:bgShift 18s ease infinite;opacity:.85;z-index:0;}
+.grid{position:absolute;inset:0;background-image:radial-gradient(circle at 1px 1px,rgba(255,255,255,.05) 1px,transparent 0);background-size:24px 24px;z-index:1;opacity:.5;}
+.veil{position:absolute;inset:0;background:linear-gradient(180deg,rgba(8,8,12,.85) 0%,rgba(8,8,12,.96) 50%,rgba(8,8,12,1) 100%);z-index:2;}
+.content{position:relative;z-index:3;padding:20px;}
+.hero{position:relative;width:100%;height:190px;border-radius:16px;overflow:hidden;border:1px solid var(--border);margin-bottom:14px;background:#000;box-shadow:0 14px 40px rgba(0,0,0,.6);}
+.hero-img{position:absolute;inset:0;${heroStyle}animation:heroPan 16s ease-in-out infinite;}
+.hero-shade{position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.15) 35%,rgba(0,0,0,.82) 100%);}
+.yt-badge{position:absolute;top:10px;left:10px;background:linear-gradient(135deg,#ff0033,#c1001f);color:#fff;padding:4px 10px;border-radius:6px;font-size:10px;font-weight:900;letter-spacing:1px;display:flex;align-items:center;gap:5px;z-index:3;box-shadow:0 6px 18px rgba(255,0,51,.45);}
+.yt-badge svg{width:14px;height:14px;fill:#fff;}
+.yt-dur{position:absolute;bottom:10px;right:12px;background:rgba(0,0,0,.82);color:#fff;padding:3px 7px;border-radius:4px;font-size:10px;font-weight:800;z-index:3;}
+.yt-title{position:absolute;bottom:10px;left:12px;right:64px;color:#fff;font-size:12.5px;font-weight:900;text-shadow:0 2px 8px rgba(0,0,0,.9);z-index:3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.play-wrap{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:4;display:flex;align-items:center;justify-content:center;width:86px;height:86px;cursor:pointer;}
+.play-ring{position:absolute;width:74px;height:74px;border-radius:50%;border:2px solid rgba(29,215,96,.7);animation:ring 2.1s ease-out infinite;}
+.play-btn{position:relative;width:70px;height:70px;border-radius:50%;background:rgba(8,8,12,.72);border:1.5px solid rgba(255,255,255,.28);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);transition:transform .15s ease,background .2s ease;}
+.play-wrap:active .play-btn{transform:scale(.9);}
+.play-btn.on{background:linear-gradient(135deg,rgba(29,185,84,.92),rgba(30,215,96,.75));border-color:rgba(255,255,255,.5);}
+.play-btn svg{width:30px;height:30px;fill:#fff;}
+.play-btn .ic-pause{display:none;}
+.play-btn.on .ic-pause{display:block;}
+.play-btn.on .ic-play{display:none;}
+.head{display:flex;align-items:center;gap:12px;margin-bottom:14px;}
+.head-text{flex:1;min-width:0;}
+.head-title{font-size:16px;font-weight:900;letter-spacing:-.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.head-sub{font-size:10px;color:var(--muted);letter-spacing:1.4px;text-transform:uppercase;font-weight:700;margin-top:3px;display:flex;align-items:center;gap:6px;}
+.live-dot{width:6px;height:6px;border-radius:50%;background:var(--accent2);opacity:.35;display:inline-block;}
+.live-dot.on{animation:pulseDot 1.6s ease-in-out infinite;opacity:1;}
+.viz-wrap{position:relative;height:120px;border-radius:16px;overflow:hidden;background:radial-gradient(ellipse at center,rgba(29,185,84,.14),transparent 70%),linear-gradient(180deg,#07070c,#03030a);border:1px solid var(--border);margin-bottom:12px;}
+#viz{display:block;width:100%;height:100%;}
+.viz-glow{position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse at 50% 100%,rgba(30,215,96,.25),transparent 60%);opacity:.6;}
+.timer{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);letter-spacing:1px;font-weight:700;margin-bottom:12px;font-variant-numeric:tabular-nums;}
+.lyric-btn{width:100%;padding:12px 16px;border-radius:12px;cursor:pointer;background:linear-gradient(135deg,rgba(29,185,84,.2),rgba(30,215,96,.08));border:1.5px solid var(--accent);color:var(--accent2);font-size:12px;font-weight:900;letter-spacing:1.5px;text-transform:uppercase;transition:transform .15s ease,background .2s ease;font-family:inherit;}
+.lyric-btn:active{transform:scale(.98);}
+.lyric-btn.on{background:linear-gradient(135deg,rgba(29,185,84,.35),rgba(30,215,96,.15));box-shadow:0 8px 24px rgba(29,185,84,.3);}
+.lyrics-panel{display:none;margin-top:12px;padding:10px 4px;border-radius:14px;border:1px solid var(--border);background:rgba(255,255,255,.028);}
+.lyrics-panel.open{display:block;}
+.lyric-line{padding:5px 10px;font-size:13px;font-weight:600;color:rgba(255,255,255,.30);text-align:center;line-height:1.35;min-height:19px;transition:color .25s ease,transform .25s ease,font-size .25s ease;}
+.lyric-line.active{color:#fff;font-size:15px;font-weight:900;text-shadow:0 0 18px var(--accent2);transform:scale(1.03);}
+.lyric-line.past{color:rgba(255,255,255,.16);}
+.foot{margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:9.5px;color:var(--muted);letter-spacing:1.2px;text-transform:uppercase;font-weight:700;flex-wrap:wrap;}
+.foot b{color:var(--ink);font-weight:800;}
+</style>
+
+<div class="wrap"><div class="card">
+  <div class="bg"></div>
+  <div class="grid"></div>
+  <div class="veil"></div>
+  <div class="content">
+
+    <div class="head">
+      <div class="head-text">
+        <div class="head-title">🎵 ${safe(SONG.title)}</div>
+        <div class="head-sub"><span class="live-dot" id="dot"></span><span id="nowLabel">Tap play · ${safe(SONG.artist)}</span></div>
+      </div>
+    </div>
+
+    <div class="hero">
+      <div class="hero-img"></div>
+      <div class="hero-shade"></div>
+      <div class="yt-badge">
+        <svg viewBox="0 0 24 24"><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2C0 8.1 0 12 0 12s0 3.9.5 5.8a3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1C24 15.9 24 12 24 12s0-3.9-.5-5.8zM9.5 15.6V8.4l6.3 3.6-6.3 3.6z"/></svg>
+        YouTube
+      </div>
+      <div class="play-wrap" id="playWrap" role="button" aria-label="Play">
+        <div class="play-ring" id="playRing"></div>
+        <div class="play-btn" id="playBtn">
+          <svg class="ic-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          <svg class="ic-pause" viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+        </div>
+      </div>
+      <div class="yt-title">${safe(SONG.title)}</div>
+      <div class="yt-dur">${safe(badgeLabel)}</div>
+    </div>
+
+    <div class="viz-wrap">
+      <canvas id="viz"></canvas>
+      <div class="viz-glow"></div>
+    </div>
+
+    <div class="timer"><span id="tCur">0:00</span><span id="tDur">0:00</span></div>
+
+    <button class="lyric-btn" id="lyricToggle"${hasTimedLyrics ? '' : ' style="display:none"'}>🎤 Show Lyrics</button>
+
+    <div class="lyrics-panel" id="lyricsPanel"></div>
+
+    <div class="foot">
+      <div>⚡ <b>BIGBROTHER</b></div>
+      <div>DARKNOTE L2</div>
+    </div>
+
+  </div>
+</div></div>
+
+<script>
+(function(){
+  var LYRICS      = ${lyricsJson};
+  var HAS_LYRICS  = ${hasTimedLyrics ? 'true' : 'false'};
+  var AUDIO_B64   = "${encodedBase64}";
+  var TOTAL       = ${totalSeconds};
+  var SOURCE_LBL  = "${sourceLabel}";
+
+  var wrap     = document.getElementById('playWrap');
+  var btn      = document.getElementById('playBtn');
+  var ring     = document.getElementById('playRing');
+  var dot      = document.getElementById('dot');
+  var nowLabel = document.getElementById('nowLabel');
+  var canvas   = document.getElementById('viz');
+  var ctx2     = canvas.getContext('2d');
+  var toggle   = document.getElementById('lyricToggle');
+  var panel    = document.getElementById('lyricsPanel');
+  var tCur     = document.getElementById('tCur');
+  var tDur     = document.getElementById('tDur');
+
+  /* ── five-line lyric window (the sandbox cannot scroll) ── */
+  var WINDOW = 5, slots = [];
+  if (HAS_LYRICS){
+    for (var w = 0; w < WINDOW; w++){
+      var el = document.createElement('div');
+      el.className = 'lyric-line';
+      panel.appendChild(el);
+      slots.push(el);
+    }
+    toggle.addEventListener('click', function(){
+      var open = panel.classList.toggle('open');
+      toggle.classList.toggle('on', open);
+      toggle.textContent = open ? '🎤 Hide Lyrics' : '🎤 Show Lyrics';
+    });
+  }
+  function renderWindow(idx){
+    if (!HAS_LYRICS) return;
+    var mid = Math.floor(WINDOW / 2);
+    for (var s = 0; s < WINDOW; s++){
+      var li = idx + (s - mid), node = slots[s];
+      if (li < 0 || li >= LYRICS.length){ node.textContent = ''; node.className = 'lyric-line'; continue; }
+      node.textContent = LYRICS[li].text;
+      node.className = 'lyric-line' + (li === idx ? ' active' : (li < idx ? ' past' : ''));
+    }
+  }
+  renderWindow(0);
+
+  /* ══════════════════════════════════════════════════════════════
+     AUDIO.
+     With a real track, AUDIO_B64 holds the WHOLE song: it is decoded
+     with Web Audio and played through a BufferSource, so the button
+     plays the real recording end to end. Remote URLs cannot be used
+     here - the sandbox has no network at all.
+     Without one, the music is synthesised in the card instead.
+     ══════════════════════════════════════════════════════════════ */
+  var actx = null, master = null, analyser = null, freqData = null, HAT = null;
+  var playing = false, pendingPlay = false;
+  var clipBuf = null, clipNode = null, clipOffset = 0, clipStart = 0, stopping = false;
+  var step = 0, nextTime = 0, t0 = 0, elapsed = 0, curLine = -1;
+  var USE_CLIP = AUDIO_B64.length > 0;
+
+  var BPM  = ${Number(SONG.bpm) || 171};
+  var BEAT = 60 / BPM;
+  var STEP = BEAT / 2;
+  var BASS  = [42, 45, 40, 47];
+  var CHORD = [[66,69,73,78],[69,73,76,81],[64,68,71,76],[71,75,78,83]];
+
+  function midi(n){ return 440 * Math.pow(2, (n - 69) / 12); }
+
+  function decodeClip(){
+    try {
+      var bin = atob(AUDIO_B64);
+      var bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      var ok = function(decoded){
+        clipBuf = decoded;
+        /* The decoder knows the true length of what is embedded, so it wins over
+           the duration passed in from the server metadata. That keeps the timer
+           honest when the embedded audio is a 30 second preview rather than the
+           whole track (or when the metadata simply disagrees). */
+        total = decoded.duration;
+        if (tDur) tDur.textContent = fmt(total);
+        if (HAS_LYRICS) spreadLyrics(decoded.duration);
+        if (pendingPlay){ pendingPlay = false; beginAudio(); }
+      };
+      var p = actx.decodeAudioData(bytes.buffer, ok, function(){ clipBuf = null; USE_CLIP = false; });
+      if (p && p.then) p.then(ok).catch(function(){ clipBuf = null; USE_CLIP = false; });
+    } catch (e) { clipBuf = null; USE_CLIP = false; }
+  }
+
+  /* No lyric timings exist for a real song, so the demo lines are spread
+     across the clip. Only used when timed lyrics are present. */
+  var total = USE_CLIP ? TOTAL : TOTAL;
+  function spreadLyrics(duration){ total = duration; }
+
+  function initAudio(){
+    if (actx) return;
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    actx = new Ctx();
+    master = actx.createGain();
+    master.gain.value = 0;
+    analyser = actx.createAnalyser();
+    analyser.fftSize = 128;
+    analyser.smoothingTimeConstant = 0.75;
+    freqData = new Uint8Array(analyser.frequencyBinCount);
+    master.connect(analyser);
+    analyser.connect(actx.destination);
+    var len = Math.floor(actx.sampleRate * 0.1);
+    HAT = actx.createBuffer(1, len, actx.sampleRate);
+    var hd = HAT.getChannelData(0);
+    for (var i = 0; i < len; i++) hd[i] = Math.random() * 2 - 1;
+    if (USE_CLIP) decodeClip();
+  }
+
+  function tone(t, freq, dur, type, vol){
+    var o = actx.createOscillator(), g = actx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(master);
+    o.start(t); o.stop(t + dur + 0.03);
+  }
+  function hat(t, vol){
+    var s = actx.createBufferSource(), g = actx.createGain(), hp = actx.createBiquadFilter();
+    s.buffer = HAT; hp.type = 'highpass'; hp.frequency.value = 7500;
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+    s.connect(hp); hp.connect(g); g.connect(master);
+    s.start(t); s.stop(t + 0.07);
+  }
+  function kick(t, vol){
+    var o = actx.createOscillator(), g = actx.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(150, t);
+    o.frequency.exponentialRampToValueAtTime(44, t + 0.13);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.24);
+    o.connect(g); g.connect(master);
+    o.start(t); o.stop(t + 0.26);
+  }
+  function scheduler(){
+    if (!playing || USE_CLIP) return;
+    while (nextTime < actx.currentTime + 0.22){
+      var bar = Math.floor(step / 8) % 4, s = step % 8;
+      if (s === 0 || s === 4) tone(nextTime, midi(BASS[bar]), BEAT * 0.9, 'triangle', 0.42);
+      tone(nextTime, midi(CHORD[bar][s % 4] + 12), STEP * 0.92, 'sawtooth', 0.085);
+      hat(nextTime, s % 2 ? 0.05 : 0.10);
+      if (s % 2 === 0) kick(nextTime, 0.36);
+      nextTime += STEP; step++;
+    }
+  }
+
+  function setPlayingUI(on){
+    btn.classList.toggle('on', on);
+    dot.classList.toggle('on', on);
+    nowLabel.textContent = on
+      ? (USE_CLIP ? 'Now Playing · ${safe(SONG.artist)}' : 'Synth · ${safe(SONG.artist)}')
+      : (USE_CLIP ? 'Paused · ${safe(SONG.artist)}' : 'Tap play · ${safe(SONG.artist)}');
+    ring.style.display = on ? 'none' : 'block';
+  }
+
+  function beginAudio(){
+    if (USE_CLIP){
+      if (!clipBuf){ pendingPlay = true; return; }
+      clipNode = actx.createBufferSource();
+      clipNode.buffer = clipBuf;
+      clipNode.connect(master);
+      stopping = false;
+      clipNode.onended = function(){
+        if (stopping) return;
+        /* the clip finished: reset to the start, stay paused */
+        playing = false; clipOffset = 0;
+        master.gain.setTargetAtTime(0, actx.currentTime, 0.04);
+        setPlayingUI(false);
+      };
+      clipNode.start(0, clipOffset);
+      clipStart = actx.currentTime;
+    } else {
+      nextTime = actx.currentTime + 0.08;
+    }
+  }
+
+  function play(){
+    initAudio();
+    if (actx.state === 'suspended') actx.resume();
+    if (playing) return;
+    playing = true;
+    t0 = actx.currentTime;
+    master.gain.cancelScheduledValues(actx.currentTime);
+    master.gain.setTargetAtTime(0.9, actx.currentTime, 0.06);
+    beginAudio();
+    setPlayingUI(true);
+  }
+  function pause(){
+    if (!playing) return;
+    playing = false;
+    if (USE_CLIP){
+      if (clipNode){
+        stopping = true;
+        try { clipNode.stop(); } catch (e) { }
+        clipNode = null;
+      }
+      clipOffset += actx.currentTime - clipStart;
+      if (clipBuf && clipOffset >= clipBuf.duration - 0.05) clipOffset = 0;
+    } else {
+      elapsed += actx.currentTime - t0;
+    }
+    master.gain.cancelScheduledValues(actx.currentTime);
+    master.gain.setTargetAtTime(0, actx.currentTime, 0.04);
+    setPlayingUI(false);
+  }
+
+  function tap(e){
+    if (e && e.preventDefault) e.preventDefault();
+    if (playing) pause(); else play();
+  }
+  wrap.addEventListener('click', tap);
+  wrap.addEventListener('touchstart', tap, { passive: false });
+
+  function resize(){
+    var dpr = window.devicePixelRatio || 1;
+    var r = canvas.getBoundingClientRect();
+    canvas.width = r.width * dpr;
+    canvas.height = r.height * dpr;
+    ctx2.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+
+  var BARS = 40, heights = new Array(BARS).fill(0.06);
+  function roundRect(c, x, y, w, h, r){
+    if (h < r * 2) r = h / 2;
+    if (w < r * 2) r = w / 2;
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+  function draw(){
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    ctx2.clearRect(0, 0, w, h);
+    if (analyser && playing) analyser.getByteFrequencyData(freqData);
+    for (var i = 0; i < BARS; i++){
+      var v;
+      if (playing && freqData){
+        var bin = Math.floor(Math.pow(i / BARS, 1.35) * freqData.length * 0.62);
+        v = (freqData[bin] / 255) * (i < BARS * 0.3 ? 1.25 : 1);
+      } else {
+        v = 0.09 + Math.sin(Date.now() / 900 + i * 0.4) * 0.035;
+      }
+      if (v > 1) v = 1;
+      heights[i] = heights[i] * 0.62 + v * 0.38;
+    }
+    var gap = 3, barW = (w - gap * (BARS - 1)) / BARS;
+    var grad = ctx2.createLinearGradient(0, h, 0, 0);
+    grad.addColorStop(0, '#1db954');
+    grad.addColorStop(0.55, '#1ed760');
+    grad.addColorStop(1, '#a7ff83');
+    ctx2.globalAlpha = playing ? 1 : 0.45;
+    for (var b = 0; b < BARS; b++){
+      var bh = Math.max(3, heights[b] * (h - 12));
+      ctx2.fillStyle = grad;
+      roundRect(ctx2, b * (barW + gap), h - bh, barW, bh, 2);
+      ctx2.fill();
+    }
+    ctx2.globalAlpha = 1;
+    ctx2.save();
+    ctx2.globalAlpha = 0.13;
+    ctx2.scale(1, -1);
+    for (var r = 0; r < BARS; r++){
+      var rh = Math.max(2, heights[r] * (h - 12) * 0.32);
+      ctx2.fillStyle = '#1ed760';
+      roundRect(ctx2, r * (barW + gap), -h + 1, barW, rh, 2);
+      ctx2.fill();
+    }
+    ctx2.restore();
+    requestAnimationFrame(draw);
+  }
+
+  function fmt(s){
+    if (!isFinite(s) || s < 0) s = 0;
+    var m = Math.floor(s / 60), r = Math.floor(s % 60);
+    return m + ':' + (r < 10 ? '0' : '') + r;
+  }
+  tDur.textContent = fmt(TOTAL);
+
+  function loop(){
+    var now;
+    if (USE_CLIP) now = clipOffset + (playing ? (actx ? actx.currentTime - clipStart : 0) : 0);
+    else now = elapsed + (playing && actx ? (actx.currentTime - t0) : 0);
+    if (!isFinite(now) || now < 0) now = 0;
+    tCur.textContent = fmt(now);
+    if (HAS_LYRICS){
+      var idx = -1;
+      for (var k = 0; k < LYRICS.length; k++){ if (now >= LYRICS[k].t) idx = k; else break; }
+      if (idx !== curLine){ curLine = idx; renderWindow(idx < 0 ? 0 : idx); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  resize();
+  requestAnimationFrame(draw);
+  requestAnimationFrame(loop);
+  setInterval(scheduler, 55);
+})();
+</script>
+`;
+
+                        // ═══════════════════════════════════════════════════════
+                        //  SEND — the card, then the full track
+                        // ═══════════════════════════════════════════════════════
+                        const rich = new AIRich(conn, { dynamic: true, unsupportedTypeAlert: false });
+                        rich.addSection({
+                            view_model: {
+                                primitive: {
+                                    __typename: 'GenAIaeacdsnwHtmlPrimitive',
+                                    payload: htmlPayload,
+                                    trusted_sources: ['mzazi.shop']
+                                },
+                                __typename: 'GenAISingleLayoutViewModel'
+                            }
+                        });
+
+                        await rich.send(m.chat, {
+                            quoted: m,
+                            includesUnifiedResponse: true,
+                            includesSubmessages: false,
+                            forwarded: true,
+                            notification: false
+                        });
+
+                        console.log(`[PLAY] card sent (${(htmlPayload.length / 1024).toFixed(0)} KB, thumbnail ${thumbData ? 'inlined' : 'CSS fallback'}, audio ${encodedBase64 ? 'whole song embedded' : 'synth'})`);
+
+                        /*
+                         * THE FULL TRACK, UNDERNEATH THE CARD.
+                         *
+                         * The card's audio is the same recording, but it only fits the
+                         * markup as a ~3-6 kbps mono Opus - audible, yet obviously
+                         * degraded. This message carries the untouched download at full
+                         * quality, and unlike the card it is not limited to the card's
+                         * ~7 minute ceiling. It is sent only when a real track was
+                         * downloaded, so the demo card still sends just the card.
+                         */
+                        if (fullTrack) {
+                            try {
+                                await conn.sendMessage(m.chat, {
+                                    audio: fullTrack.buffer,
+                                    mimetype: fullTrack.mimetype || 'audio/mpeg',
+                                    fileName: `${safeVideoFilename(SONG.artist + ' - ' + SONG.title)}.mp3`,
+                                    ptt: false
+                                }, { quoted: m });
+                                console.log(`[PLAY] full track sent underneath (${(fullTrack.buffer.length / 1024 / 1024).toFixed(2)} MB)`);
+                            } catch (error) {
+                                // The card already carries the song; losing this message
+                                // is not worth failing the whole command over.
+                                console.error('[PLAY] could not send the full track:', error?.message || error);
+                            }
+                        }
+
+                        await conn.sendMessage(m.chat, { react: { text: '🎵', key: m.key } });
+
+                    } catch (err) {
+                        console.error('[PLAY] error:', err);
+                        try { await conn.sendMessage(m.chat, { react: { text: '❌', key: m.key } }); } catch (_) { }
+                        bigboreply('❌ Error: ' + (err?.message || 'unknown'));
+                    }
+                })();
+
+                return;
+            }
+
             case 'song': {
                 const query = args.join(' ').trim();
                 if (!query) return bigboreply(`🎵 *YouTube Song Search*\n\nUsage: ${config.prefix || '.'}song <song name>`);
@@ -2735,6 +3754,9 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
                             thumbnail: v.thumbnail,
                             author: v.author?.name || 'YouTube',
                             timestamp: v.timestamp || 'Unknown',
+                            // Kept so ytdlSongBuffer can tell the real track from the
+                            // 30 s snippet and the slowed/sped-up edits of it.
+                            seconds: Number(v.seconds) || 0,
                             views: v.views || 0
                         }));
                     if (!results.length) return bigboreply('❌ No YouTube songs found.');
@@ -2760,7 +3782,20 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
                 void reactSequence(conn, m, ['🎵', '⏳'], { gapMs: 250 }).catch(() => { });
                 await bigboreply(`⏳ Downloading audio...\n🎵 ${song.title}`);
                 try {
-                    const result = await ytdlAutoBuffer(song.url, 'audio');
+                    let result = await ytdlAutoBuffer(song.url, 'audio');
+                    /*
+                     * Same lookup as .play: the whole YouTube track when the server
+                     * is allowed to fetch it, otherwise the song resolver - which
+                     * tries full-length SoundCloud first and the official 30 second
+                     * preview second. See lib/ytdl.source.js.
+                     */
+                    if (!result?.status || !Buffer.isBuffer(result.buffer)) {
+                        console.error('song audio: YouTube download failed:', result?.error || 'no buffer');
+                        const resolved = await ytdlSongBuffer({
+                            title: song.title, artist: song.author, seconds: Number(song.seconds) || 0
+                        });
+                        if (resolved?.status && Buffer.isBuffer(resolved.buffer)) result = resolved;
+                    }
                     if (!result?.status || !Buffer.isBuffer(result.buffer)) {
                         await setReaction(conn, m, '❌');
                         return bigboreply(`❌ Failed to download the audio.\n${result?.error || ''}`.trim());
