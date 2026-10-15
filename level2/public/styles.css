@@ -1,0 +1,494 @@
+/*
+ * DARKNOTE LEVEL 2 — the phone.
+ *
+ * Samsung One UI inspired: a tall rounded body, a centred punch-hole camera, a
+ * status bar that sits INSIDE the screen, an app grid with generous spacing, and
+ * one accent colour used consistently (DARKNOTE red) with white text on near-black.
+ *
+ * Responsive strategy: on a phone the shell fills the viewport (the real device is
+ * the phone). On desktop the same shell is rendered at a phone's aspect ratio and
+ * centred, so it reads as "a phone on screen" rather than a stretched web page.
+ */
+
+:root {
+    --dn-red: #ff2d2d;
+    --dn-red-dim: #b81616;
+    --dn-dark: #08080a;
+    --dn-panel: #121216;
+    --dn-panel-2: #1b1b21;
+    --dn-line: #2a2a33;
+    --dn-text: #f2f2f5;
+    --dn-muted: #9b9ba8;
+    --dn-green: #17b24a;
+    --dn-body: #24242a;
+    --radius-screen: 38px;
+    --screen-h: 100%;
+    --ease: cubic-bezier(.22, .61, .36, 1);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    height: 100%;
+    background: radial-gradient(circle at 50% 0%, #16161c 0%, #0b0b0e 55%, #050506 100%);
+    color: var(--dn-text);
+    font-family: "Segoe UI", Roboto, "Helvetica Neue", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior: none;
+}
+
+.stage {
+    min-height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 12px;
+}
+
+/* ------------------------------- the shell -------------------------------- */
+
+.phone {
+    position: relative;
+    width: min(390px, 100%);
+    height: min(844px, calc(100vh - 48px));
+    max-height: 844px;
+}
+
+.phone-body {
+    position: relative;
+    height: 100%;
+    padding: 10px;
+    border-radius: calc(var(--radius-screen) + 12px);
+    background: linear-gradient(160deg, #3a3a44 0%, var(--dn-body) 40%, #17171b 100%);
+    box-shadow:
+        0 0 0 1px #46464f inset,
+        0 30px 70px rgba(0, 0, 0, .65),
+        0 2px 0 rgba(255, 255, 255, .05) inset;
+}
+
+/* Side buttons, purely physical detail - not interactive. */
+.phone-body::before,
+.phone-body::after {
+    content: "";
+    position: absolute;
+    width: 3px;
+    border-radius: 3px;
+    background: #4a4a55;
+}
+.phone-body::before { right: -3px; top: 22%; height: 8%; }
+.phone-body::after { right: -3px; top: 34%; height: 12%; }
+
+.phone-screen {
+    position: relative;
+    height: var(--screen-h);
+    border-radius: var(--radius-screen);
+    overflow: hidden;
+    background: var(--dn-dark);
+    box-shadow: 0 0 0 2px #000 inset;
+}
+
+.camera-hole {
+    position: absolute;
+    top: 12px; left: 50%;
+    transform: translateX(-50%);
+    width: 13px; height: 13px;
+    border-radius: 50%;
+    background: #000;
+    box-shadow: 0 0 0 1px #1d1d24;
+    z-index: 40;
+}
+
+/* ------------------------------ status bar -------------------------------- */
+
+.statusbar {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 44px;
+    padding: 8px 18px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: .2px;
+    color: #fff;
+    z-index: 30;
+    pointer-events: none;
+}
+
+.sb-right { display: flex; align-items: center; gap: 6px; }
+.sb-icon { font-size: 12px; opacity: .95; }
+#sb-battery-icon { color: var(--dn-green); }
+
+/* ------------------------------- layers ----------------------------------- */
+
+.screen-layer {
+    position: absolute;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    padding: 52px 20px 26px;
+    background: linear-gradient(180deg, #101014 0%, #0a0a0c 60%, #08080a 100%);
+}
+
+.screen-layer.is-visible { display: flex; }
+
+/* App screens slide in from the bottom, so opening an app reads as a motion. */
+.app-layer { animation: none; }
+.app-layer.is-opening { animation: appIn .26s var(--ease); }
+
+@keyframes appIn {
+    from { opacity: 0; transform: translateY(14px) scale(.985); }
+    to { opacity: 1; transform: none; }
+}
+
+/* ----------------------------- lock screen -------------------------------- */
+
+#lock {
+    align-items: center;
+    text-align: center;
+    background:
+        radial-gradient(circle at 50% 12%, rgba(255, 45, 45, .16), transparent 58%),
+        linear-gradient(180deg, #101014 0%, #0a0a0c 60%, #08080a 100%);
+}
+
+.lock-logo {
+    margin-top: 6px;
+    font-size: 24px;
+    font-weight: 800;
+    letter-spacing: 7px;
+    color: var(--dn-red);
+}
+
+.lock-sub {
+    margin-top: 2px;
+    font-size: 11px;
+    letter-spacing: 5px;
+    color: var(--dn-muted);
+}
+
+.lock-clock {
+    margin-top: 18px;
+    font-size: 44px;
+    font-weight: 300;
+    letter-spacing: 1px;
+}
+
+.lock-date { font-size: 12px; color: var(--dn-muted); margin-top: 2px; }
+
+.pin-display {
+    display: flex;
+    gap: 12px;
+    margin: 22px 0 10px;
+}
+
+.pin-display i {
+    width: 13px; height: 13px;
+    border-radius: 50%;
+    border: 1px solid #4b4b57;
+    background: transparent;
+    transition: background .15s, border-color .15s, transform .15s;
+}
+
+.pin-display i.is-filled {
+    background: var(--dn-red);
+    border-color: var(--dn-red);
+    transform: scale(1.08);
+}
+
+.lock-message {
+    min-height: 34px;
+    font-size: 12.5px;
+    color: var(--dn-muted);
+    line-height: 1.35;
+    padding: 0 8px;
+}
+
+.lock-message.is-error { color: #ff8080; }
+.lock-message.is-ok { color: #7ee0a0; }
+
+.keypad {
+    margin-top: auto;
+    width: 100%;
+    max-width: 268px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    padding-bottom: 6px;
+}
+
+.keypad button {
+    height: 58px;
+    border-radius: 18px;
+    border: 1px solid var(--dn-line);
+    background: linear-gradient(180deg, #17171d, #101015);
+    color: var(--dn-text);
+    font-size: 22px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: transform .12s var(--ease), background .12s;
+}
+
+.keypad button:active { transform: scale(.95); background: #23232c; }
+.keypad button.is-quiet { font-size: 16px; color: var(--dn-muted); }
+
+/* A wrong code shakes the dots: feedback without a message box. */
+.pin-display.is-wrong { animation: shake .32s ease; }
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-7px); }
+    75% { transform: translateX(7px); }
+}
+
+.lock-server {
+    margin-top: 12px;
+    font-size: 10.5px;
+    color: #6d6d7a;
+    letter-spacing: .3px;
+}
+.lock-server.is-offline { color: #ffb04a; }
+
+/* ----------------------------- home screen -------------------------------- */
+
+.home-status {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 18px;
+}
+
+.chip {
+    font-size: 11px;
+    padding: 5px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--dn-line);
+    background: #131318;
+    color: var(--dn-muted);
+}
+
+.chip.is-good { border-color: #1d5c36; color: #7ee0a0; }
+.chip.is-warn { border-color: #5c4a1d; color: #ffb04a; }
+
+.app-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 18px 12px;
+    align-content: start;
+}
+
+.app-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 7px;
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    color: var(--dn-text);
+    font-family: inherit;
+}
+
+.app-icon {
+    width: 54px; height: 54px;
+    border-radius: 16px;
+    display: grid;
+    place-items: center;
+    font-size: 24px;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, .5), 0 0 0 1px rgba(255, 255, 255, .05) inset;
+    transition: transform .16s var(--ease);
+}
+
+.app-tile:active .app-icon { transform: scale(.93); }
+.app-tile.is-disabled { opacity: .55; }
+
+.app-label { font-size: 11px; color: #d6d6de; text-align: center; }
+
+/* Icon backgrounds. Each app states its own colours in the registry. */
+.icon-settings { background: linear-gradient(160deg, #3d3d47, #202027); }
+.icon-swap { background: linear-gradient(160deg, #17b24a, #0c7a30); }
+.icon-games { background: linear-gradient(160deg, #ff2d2d, #8d0f0f); }
+
+/* The Swap icon's person mark: white figure on the green tile, red accent, so the
+   icon is recognisable at grid size and consistent with the other apps. */
+.swap-mark { position: relative; width: 30px; height: 30px; }
+.swap-mark .head {
+    position: absolute; top: 1px; left: 50%; transform: translateX(-50%);
+    width: 11px; height: 11px; border-radius: 50%;
+    background: #fff; box-shadow: 0 0 0 1.5px var(--dn-red);
+}
+.swap-mark .body {
+    position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
+    width: 22px; height: 15px;
+    border-radius: 11px 11px 5px 5px;
+    background: #fff; box-shadow: 0 0 0 1.5px var(--dn-red);
+}
+
+.home-foot {
+    margin-top: auto;
+    text-align: center;
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: #55555f;
+}
+
+/* -------------------------------- app host -------------------------------- */
+
+.app-layer { padding: 0; background: #0c0c10; }
+
+.app-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 52px 12px 10px;
+    border-bottom: 1px solid #1c1c22;
+    background: #101015;
+}
+
+.app-back, .app-home {
+    width: 34px; height: 34px;
+    border-radius: 10px;
+    border: 1px solid var(--dn-line);
+    background: #16161c;
+    color: var(--dn-text);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.app-back:active, .app-home:active { background: #23232c; }
+.app-title { flex: 1; font-size: 14px; font-weight: 600; letter-spacing: .4px; }
+
+.app-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 16px 26px;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* ------------------------------- shared bits ------------------------------ */
+
+.panel {
+    border: 1px solid var(--dn-line);
+    background: linear-gradient(180deg, #14141a, #101014);
+    border-radius: 16px;
+    padding: 14px;
+    margin-bottom: 12px;
+}
+
+.panel h3 {
+    margin: 0 0 10px;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--dn-muted);
+    font-weight: 600;
+}
+
+.row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 9px 0;
+    border-bottom: 1px solid #1b1b21;
+    font-size: 13px;
+}
+.row:last-child { border-bottom: 0; }
+.row .k { color: var(--dn-muted); }
+.row .v { text-align: right; word-break: break-word; }
+.v.is-good { color: #7ee0a0; }
+.v.is-warn { color: #ffb04a; }
+.v.is-bad { color: #ff8080; }
+
+.btn {
+    width: 100%;
+    padding: 13px 16px;
+    border-radius: 14px;
+    border: 1px solid var(--dn-line);
+    background: linear-gradient(180deg, #1b1b22, #14141a);
+    color: var(--dn-text);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+}
+.btn:active { transform: scale(.985); }
+.btn.is-primary { background: linear-gradient(180deg, var(--dn-red), var(--dn-red-dim)); border-color: #7d1010; }
+.btn.is-green { background: linear-gradient(180deg, #17b24a, #0c7a30); border-color: #0a5c24; }
+.btn[disabled] { opacity: .5; cursor: default; }
+
+.note {
+    font-size: 11.5px;
+    color: #83839a;
+    line-height: 1.5;
+    margin-top: 8px;
+}
+
+.result {
+    margin-top: 12px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    padding: 11px 12px;
+    border-radius: 12px;
+    border: 1px solid var(--dn-line);
+    background: #12121a;
+    white-space: pre-wrap;
+}
+.result.is-ok { border-color: #1d5c36; color: #a8f0c3; }
+.result.is-bad { border-color: #6d2222; color: #ffb3b3; }
+.result:empty { display: none; }
+
+/* ------------------------------ navigation -------------------------------- */
+
+.navbar {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 46px;
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    background: rgba(10, 10, 13, .92);
+    border-top: 1px solid #1c1c22;
+    backdrop-filter: blur(6px);
+    z-index: 35;
+}
+
+.navbar button {
+    background: none;
+    border: 0;
+    color: #cfcfda;
+    font-size: 11.5px;
+    letter-spacing: .6px;
+    font-family: inherit;
+    cursor: pointer;
+    padding: 10px 14px;
+}
+
+.navbar button:active { color: #fff; }
+
+.homebar {
+    position: absolute;
+    bottom: 8px; left: 50%;
+    transform: translateX(-50%);
+    width: 116px; height: 4px;
+    border-radius: 3px;
+    background: #5b5b66;
+    z-index: 36;
+    pointer-events: none;
+}
+
+/* -------------------------------- small screens --------------------------- */
+
+@media (max-width: 420px), (max-height: 740px) {
+    .stage { padding: 0; }
+    .phone { width: 100%; height: 100vh; max-height: none; }
+    .phone-body { border-radius: 0; padding: 0; }
+    .phone-screen { border-radius: 0; }
+    :root { --radius-screen: 0px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .app-layer.is-opening { animation: none; }
+    .pin-display.is-wrong { animation: none; }
+}

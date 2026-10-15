@@ -195,8 +195,10 @@ and managed with `.addowner` / `.delowner`.
 Member lists render as horizontally swipable carousels of **exactly 15 real
 members per card**, each labelled with its position (`CARD 2/3`, `Members 16–30 of 31`).
 Members are never duplicated between cards, never truncated, and never invented to
-fill a card. Applies to `tagall`, `listonline`, `listactive`, `listinactive`,
-`groupadmins` and `admin`.
+fill a card. Applies to `listonline`, `listactive`, `listinactive`,
+`groupadmins` and `admin`. `.tagall` and `.callall` do not use the card layer:
+they send a single boxed plain-text broadcast that still carries a real
+`mentions` array.
 
 `lib/cards.js` also fixes the `Cannot read properties of undefined (reading 'create')`
 crash: it prefers the generated protobuf `.create()` helper when the installed

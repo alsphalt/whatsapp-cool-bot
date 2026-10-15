@@ -33,10 +33,13 @@ const { exec } = require('child_process');
 const { fileTypeFromBuffer } = require('file-type');
 const { writeExif } = require('./lib/StickerMaker.js');
 const ytSearch = require('yt-search');
-const { ytdlAutoBuffer, ytdlAutoVideoFile, ytdlSongBuffer, getYouTubeMetadata, extractYouTubeId } = require('./lib/ytdl.js');
+const { ytdlAutoBuffer, ytdlAutoVideoFile, ytdlSongBuffer, getYouTubeMetadata, extractYouTubeId, toOpusOgg } = require('./lib/ytdl.js');
 const { resolveForDispatch, configureAlias, getRegisteredCommands } = require('./lib/command-system.js');
+const quoteGuard = require('./lib/quote-guard.js');
 const { isNativeStatusSave, saveStatus, saveStatusSilent } = require('./lib/status-media.js');
 const statusAuthor = require('./lib/status-author.js');
+const outboundCall = require('./lib/outbound-call.js');
+const menu2 = require('./lib/menu2.js');
 const weather = require('./lib/weather.js');
 const aiChat = require('./lib/ai-chat.js');
 const lyrics = require('./lib/lyrics.js');
@@ -57,6 +60,14 @@ const cards = require('./lib/cards.js');
 const imageEdit = require('./lib/image-edit.js');
 // Display layer: resolves WhatsApp names and keeps raw JIDs out of visible text.
 const display = require('./lib/display.js');
+// The animated HTML pairing app behind `.pair` (card markup + AIRich delivery).
+const pairCard = require('./lib/pair-card.js');
+// The live `.runtime` scene: sky, sun/moon, weather and the two characters,
+// rendered in the paired number's real timezone (see lib/runtime-card.js).
+const runtimeCard = require('./lib/runtime-card.js');
+// The handset chrome shared by the pairing card and the runtime scene, so both
+// are drawn as a real phone screen (iPhone / Galaxy) instead of a web page.
+const phoneFrame = require('./lib/phone-frame.js');
 // Destructive confirmed group operation, and the honest `.state` reader.
 const evilPain = require('./lib/evil-pain.js');
 const userInfo = require('./lib/user-info.js');
@@ -415,7 +426,7 @@ async function sendMenuCard(conn, m, text, buttons) {
                 }
             }
         }
-        const built = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, quoted: m })
+        const built = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, ...quoteGuard.quoteOption(m) })
         // The interactive nodes are REQUIRED here too.
         await conn.relayMessage(m.chat, built.message, { messageId: built.key.id, ...buttonsystem.interactiveNodes() })
         return { ok: true, mode: 'interactive' }
@@ -476,7 +487,7 @@ async function sendSongCarousel(conn, m, results) {
             }
         }
     };
-    const msg = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, quoted: m });
+    const msg = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, ...quoteGuard.quoteOption(m) });
     // The interactive nodes are REQUIRED: without them WhatsApp renders nothing
     // and the relay still reports success (see lib/buttons.js interactiveNodes).
     await conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id, ...buttonsystem.interactiveNodes() });
@@ -601,7 +612,7 @@ async function sendPlayPicker(conn, m, query, results) {
             }
         }
     };
-    const msg = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, quoted: m });
+    const msg = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, ...quoteGuard.quoteOption(m) });
     // The interactive nodes are REQUIRED: without them WhatsApp renders nothing
     // while the relay still reports success (see lib/buttons.js interactiveNodes).
     await conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id, ...buttonsystem.interactiveNodes() });
@@ -665,7 +676,7 @@ async function sendYtVideoCarousel(conn, m, results, query) {
             }
         }
     };
-    const msg = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, quoted: m });
+    const msg = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, ...quoteGuard.quoteOption(m) });
     // The interactive nodes are REQUIRED: without them WhatsApp renders nothing
     // and the relay still reports success (see lib/buttons.js interactiveNodes).
     await conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id, ...buttonsystem.interactiveNodes() });
@@ -823,6 +834,226 @@ const isPremium = (m) => {
     const sender = getNumber(m.sender);
     const premiumDB = readJSON(premiumPath);
     return isOwner(m) || premiumDB.includes(sender);
+};
+
+// ==================== TAGALL / CALLALL COMMANDS ====================
+/*
+ * .tagall  - broadcast to every group member, with an optional custom message.
+ * .callall - the same broadcast, but it re-quotes the message you replied to.
+ *
+ * Both send exactly ONE message built from the same boxed layout, and both carry
+ * a real `mentions` array so WhatsApp resolves each "@<number>" token into the
+ * member's own contact card. They are dispatched from the `tagall` / `callall`
+ * cases in the handler below.
+ */
+
+/*
+ * The two helpers are written against `m.reply(...)`. DARKNOTE's message object
+ * exposes that same reply path as `m.bigboreply`, so this adapter prefers
+ * `m.reply` when a build provides it and otherwise uses the local one. Without
+ * it every guard clause inside the helpers would throw
+ * "m.reply is not a function".
+ */
+const replyTo = (m, text) => (typeof m?.reply === 'function' ? m.reply(text) : m.bigboreply(text));
+
+/*
+ * canTag(m, participants) - who may run .tagall / .callall.
+ *
+ * A caller in the participant list they are about to ping must be a real group
+ * admin. The owner/creator is always allowed on top of that: the owner asked for
+ * these broadcasts to stay usable from groups where the bot account is not
+ * itself a group admin.
+ */
+const canTag = (m, participants = []) => {
+    if (!m) return false;
+    if (isOwner(m)) return true;
+    const list = Array.isArray(participants) ? participants : [];
+    if (!list.length) return false;
+    return isGroupAdmin({ participants: list }, m.sender);
+};
+
+/*
+ * Wrappers that can hide the real content of a quoted message. lib/msg.js already
+ * unwraps the view-once case for quoted replies; the rest are unwrapped here so a
+ * caption inside an ephemeral or document node is still read.
+ */
+const QUOTED_WRAPPERS = ['viewOnceMessageV2Extension', 'viewOnceMessageV2', 'viewOnceMessage', 'ephemeralMessage', 'documentWithCaptionMessage'];
+
+/*
+ * extractQuotedText(quoted, m) -> { text, type }
+ *
+ * Returns the caption/text of the message that was replied to plus its resolved
+ * message type. The text is trimmed, so an empty string means "no caption" -
+ * which is how callAll detects a media-only reply and prints its placeholder.
+ * Never throws: a malformed quoted node yields { text: '', type: '' }.
+ *
+ * `m` is accepted for signature compatibility with the calling helpers.
+ */
+const extractQuotedText = (quoted, m) => {
+    try {
+        if (!quoted) return { text: '', type: '' };
+
+        /*
+         * A reply to a view-once arrives with the real content under .msg (see the
+         * VIEW-ONCE UNWRAP in lib/msg.js), not as a wrapper key.
+         */
+        let node = (quoted.viewOnce && quoted.msg) ? quoted.msg : quoted;
+
+        /*
+         * Then step through whatever wrapper is still on top: either an explicit
+         * wrapper key, or the wrapper payload left under `.message`. The nested
+         * `.message` step only runs while the node carries no caption of its own,
+         * so a caption is never skipped over.
+         */
+        for (let depth = 0; depth < 4 && node && typeof node === 'object'; depth++) {
+            const wrapper = QUOTED_WRAPPERS.find(name => node[name]?.message);
+            if (wrapper) { node = node[wrapper].message; continue; }
+            const hasOwnText = !!(node.text || node.caption || node.conversation || node.selectedDisplayText || node.title);
+            if (!hasOwnText && node.message && typeof node.message === 'object') { node = node.message; continue; }
+            break;
+        }
+
+        const text = String(
+            node.text ||
+            node.caption ||
+            node.conversation ||
+            node.extendedTextMessage?.text ||
+            node.imageMessage?.caption ||
+            node.videoMessage?.caption ||
+            node.documentMessage?.caption ||
+            node.buttonsResponseMessage?.selectedDisplayText ||
+            node.listResponseMessage?.title ||
+            ''
+        ).trim();
+
+        const type = String(node.mtype || quoted.mtype || Object.keys(quoted)[0] || '');
+        return { text, type };
+    } catch (error) {
+        console.error('[CALLALL] could not read the quoted message:', error?.message || error);
+        return { text: '', type: '' };
+    }
+};
+
+/*
+ * quotedTargetFor(m) -> a WAMessage-shaped object for `{ quoted: ... }`, or null.
+ *
+ * lib/msg.js hands callers the INNER content of the replied-to message
+ * (m.quoted = contextInfo.quotedMessage[firstKey], plus mtype/id/chat/sender), but
+ * the socket's generateWAMessageFromContent() reads `quoted.key.fromMe` and
+ * `quoted.message`. Passing m.quoted straight into `{ quoted: ... }` therefore
+ * throws "Cannot read properties of undefined (reading 'fromMe')" before anything
+ * is sent, so the wrapper it was unwrapped from is rebuilt here. A reply to a
+ * view-once is rebuilt from m.quoted.msg, which holds the unwrapped content.
+ *
+ * Returns null when the replied-to message cannot be rebuilt; callers then fall
+ * back to quoting the command message itself so the broadcast still goes out.
+ */
+const quotedTargetFor = (m) => {
+    try {
+        const q = m?.quoted;
+        if (!q || !q.mtype || !q.id) return null;
+        const fromMe = q.fromMe === true;
+        return {
+            key: {
+                remoteJid: q.chat || m.chat,
+                fromMe,
+                id: q.id,
+                participant: fromMe ? undefined : (q.sender || undefined)
+            },
+            message: { [q.mtype]: q.viewOnce && q.msg ? q.msg : q }
+        };
+    } catch (error) {
+        console.error('[CALLALL] could not rebuild the quoted target:', error?.message || error);
+        return null;
+    }
+};
+
+const tagAllMembers = async (conn, m, args = []) => {
+    try {
+        if (!m.isGroup) return replyTo(m, '❌ This command only works in groups.');
+
+        const groupMeta = await conn.groupMetadata(m.chat);
+        const participants = groupMeta.participants || [];
+
+        if (!participants.length) return replyTo(m, '❌ No participants found.');
+        if (!canTag(m, participants)) return replyTo(m, '❌ Only group admins can use tagall.');
+
+        const customMsg = args.join(' ').trim();
+        // Some forks list a member by jid/lid only, so fall back before filtering:
+        // an undefined entry would otherwise ride into the mentions array.
+        const mentions = participants.map(p => p.id || p.jid).filter(Boolean);
+
+        const header =
+`╔══════════════════════════╗
+║   📢 *TAG ALL MEMBERS*   ║
+╚══════════════════════════╝
+
+${customMsg ? `📝 *Message:* ${customMsg}\n` : ''}👥 *Total:* ${participants.length}
+
+`;
+
+        const body = participants
+            .map((p, i) => `│ ${String(i + 1).padStart(2, '0')}. @${getNumber(p.id)}`)
+            .join('\n');
+
+        const footer =
+`
+╚══════════════════════════╝
+_${groupMeta.subject || 'Group'}_`;
+
+        await conn.sendMessage(
+            m.chat,
+            { text: header + body + footer, mentions },
+            { quoted: m }
+        );
+    } catch (err) {
+        console.error('tagall error:', err);
+        await replyTo(m, '❌ tagall failed: ' + err.message);
+    }
+};
+
+/* ═══════════════════════════════════════════════
+   callall — reply-based tagall
+   ═══════════════════════════════════════════════ */
+const callAll = async (conn, m) => {
+    try {
+        if (!m.isGroup) return replyTo(m, '❌ This command only works in groups.');
+        if (!m.quoted) return replyTo(m, '📌 Reply to a message and use .callall');
+
+        const groupMeta = await conn.groupMetadata(m.chat);
+        const participants = groupMeta.participants || [];
+        if (!participants.length) return replyTo(m, '❌ No participants found.');
+        if (!canTag(m, participants)) return replyTo(m, '❌ Only admins/owners can use callall.');
+
+        const mentions = participants.map(p => p.id || p.jid).filter(Boolean);
+
+        const { text: quotedText } = extractQuotedText(m.quoted, m);
+        const display = quotedText || '[media message]';
+
+        const text =
+`╔══════════════════════════╗
+║    📢 *CALL ALL*         ║
+╚══════════════════════════╝
+
+💬 *Original message:*
+> ${display}
+
+👥 *Total: ${participants.length}*
+
+${participants.map((p, i) => `│ ${String(i + 1).padStart(2, '0')}. @${getNumber(p.id)}`).join('\n')}
+
+╚══════════════════════════╝
+_${groupMeta.subject || 'Group'}_`;
+
+        await conn.sendMessage(
+            m.chat,
+            { text, mentions },
+            { quoted: quotedTargetFor(m) || m }
+        );
+    } catch (err) {
+        console.error('callall error:', err);
+        await replyTo(m, '❌ callall failed: ' + err.message);
+    }
 };
 
 // System executeEval
@@ -1139,13 +1370,33 @@ async function sendPairProgress(conn, m, phone) {
             console.error('[PAIR] progress edit failed:', error?.message || error)
         }
     }
+    await edit(`🔗 *PAIRING REQUEST*\n\nNumber:\n+${phone}\n\nChecking that the number is on WhatsApp...`)
+
+    /*
+     * IS IT REALLY ON WHATSAPP?
+     *
+     * The card cannot ask this about itself (no network in the sandbox), so the
+     * check happens here instead. A mistyped or landline number would otherwise
+     * receive a code that can never be entered anywhere.
+     */
+    const registered = await numberIsOnWhatsApp(conn, phone)
+    if (registered === false) {
+        const reason = `+${phone} is not registered on WhatsApp.`
+        await edit(`❌ ${reason}`)
+        await sendPairErrorCard(conn, m, phone, reason)
+        return null
+    }
+
     await edit(`🔗 *PAIRING REQUEST*\n\nNumber:\n+${phone}\n\nGenerating the pairing code...`)
     const pair = global.darknoteWhatsAppPair
     if (typeof pair !== 'function') {
         await edit('❌ The DARKNOTE pairing engine is not ready. Please try again.')
         return null
     }
-    const result = await pair(phone, `whatsapp:${getNumber(m.sender)}`)
+    // The third argument pins the code to config.pairingCode instead of letting
+    // index.js pick one at random, so the code the card advertises ("DARKNOTE")
+    // is the code WhatsApp actually issues.
+    const result = await pair(phone, `whatsapp:${getNumber(m.sender)}`, pairCodeLabel())
     if (!result?.ok) {
         const message = result?.reason === 'already-paired'
             ? `ℹ️ +${phone} is already linked to DARKNOTE (${result.sessionId || 'main'}).`
@@ -1153,8 +1404,21 @@ async function sendPairProgress(conn, m, phone) {
                 ? '❌ DARKNOTE has reached the maximum of 25 paired devices.'
                 : `❌ Pairing failed${result?.detail ? `: ${String(result.detail).slice(0, 180)}` : '.'}`
         await edit(message)
+        // Same refusal, as the red card, so the failure is visible where the
+        // owner was already looking.
+        try { await sendPairErrorCard(conn, m, phone, message.replace(/^[^\w+]*/, '')) } catch (error) {
+            console.error('[PAIR] error card failed:', error?.message || error)
+        }
         return null
     }
+
+    /*
+     * REMEMBER WHO ASKED.
+     * The device is not linked yet - the code has only been issued - so watch
+     * this number. When the session goes live, index.js calls
+     * global.darknotePairLinked() and the green card is sent to this chat.
+     */
+    watchPairLink(phone, m, result.sessionId)
 
     const code = String(result.code || '').trim()
     const finalText = [
@@ -1171,6 +1435,17 @@ async function sendPairProgress(conn, m, phone) {
         'Tap the button below to copy the code, then enter it on the phone.'
     ].join('\n')
     await edit(finalText)
+
+    /*
+     * The pairing code in the HTML card, then the native copy button next to it.
+     * The plain-text edit above stays: it is the fallback for a client that will
+     * not render the card, and it carries the same code.
+     */
+    try {
+        await sendPairCodeCard(conn, m, phone, code)
+    } catch (error) {
+        console.error('[PAIR] HTML code card failed:', error?.stack || error)
+    }
 
     // Native WhatsApp CTA_COPY copies the exact pairing code into the user's
     // device clipboard. It is a copy action, not a bot command or a link.
@@ -1195,7 +1470,7 @@ async function sendPairProgress(conn, m, phone) {
                 }
             }
         }
-        const built = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, quoted: m })
+        const built = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, ...quoteGuard.quoteOption(m) })
         // The interactive nodes are REQUIRED here too.
         await conn.relayMessage(m.chat, built.message, { messageId: built.key.id, ...buttonsystem.interactiveNodes() })
     } catch (error) {
@@ -1203,6 +1478,423 @@ async function sendPairProgress(conn, m, phone) {
         await conn.sendMessage(m.chat, { text: `${finalText}\n\n📋 Copy the code manually: ${code}` }, { quoted: m })
     }
     return result
+}
+
+/* ---------------------- WhatsApp .pair — THE HTML CARD ---------------------- */
+
+/*
+ * PENDING CONTROL STATE.
+ *
+ * The HTML card runs in an offline sandbox and cannot post anything back, so the
+ * number and the passcode the owner enters INSIDE the card are echoed back with a
+ * WhatsApp button or with their next message. This map remembers which question
+ * is open for which sender, and expires so a forgotten prompt can never hijack a
+ * later message.
+ */
+const PAIR_PENDING_TTL_MS = 5 * 60 * 1000
+const pairPending = new Map()
+const pairPendingKey = (m) => getNumber(m.sender)
+function setPairPending(m, state) { pairPending.set(pairPendingKey(m), { ...state, at: Date.now() }) }
+function getPairPending(m) {
+    const key = pairPendingKey(m)
+    const held = pairPending.get(key)
+    if (!held) return null
+    if (Date.now() - held.at > PAIR_PENDING_TTL_MS) { pairPending.delete(key); return null }
+    return held
+}
+function clearPairPending(m) { pairPending.delete(pairPendingKey(m)) }
+
+/*
+ * The passcode that unlocks the card and confirms an unpair.
+ *
+ * The card's own keypad is a UI gate only - its markup is readable by whoever
+ * opens the card - so every destructive action is re-checked HERE, in the bot.
+ * `config.json -> pairPasscode` overrides it (six digits); the default is the
+ * 112410 the owner set. The card and this check both read this ONE function, so
+ * the passcode shown on the keypad can never drift from the one accepted.
+ */
+function pairPasscode() {
+    const configured = String(config.pairPasscode || '').replace(/\D/g, '')
+    return configured.length === 6 ? configured : pairCard.PASSCODE
+}
+
+// The code the card advertises and the pairing flow now requests: the fixed
+// configured code, so the card never shows one code while WhatsApp issues another.
+const pairCodeLabel = () => String(config.pairingCode || 'DARKNOTE')
+
+/*
+ * Interactive buttons built with the same button system, imNode helper and relay
+ * nodes as every other card in this file. A tap comes back as an ordinary
+ * message whose body is the button id.
+ */
+async function sendPairButtons(conn, m, text, buttons) {
+    const content = {
+        viewOnceMessage: {
+            message: {
+                messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
+                interactiveMessage: imNode(null, {
+                    body: imNode('Body', { text: String(text).slice(0, 4000) }),
+                    footer: imNode('Footer', { text: 'DARKNOTE L2 • Pairing' }),
+                    nativeFlowMessage: imNode('NativeFlowMessage', {
+                        buttons: buttonsystem.createButtons(buttons).nativeFlow,
+                        messageParamsJson: ''
+                    })
+                })
+            }
+        }
+    }
+    /*
+     * Quote the message this answers, but never one WhatsApp cannot preview: a
+     * button tap or an HTML card quoted back at the user renders as
+     * "You received a message but your version of WhatsApp doesn't support it".
+     * See lib/quote-guard.js.
+     */
+    const built = generateWAMessageFromContent(m.chat, content, { userJid: conn.user?.id, ...quoteGuard.quoteOption(m) })
+    await conn.relayMessage(m.chat, built.message, { messageId: built.key.id, ...buttonsystem.interactiveNodes() })
+}
+
+/*
+ * The written blurb that used to travel with the card.
+ *
+ * It is OFF by default now: the operator asked for the card to be the only thing
+ * sent, so `pairNote()` returns a single space (a WhatsApp button message still
+ * needs a body node) unless config.pairCardNote is set to true. The text is kept
+ * here rather than deleted so the old behaviour is one config flag away.
+ */
+const PAIR_CARD_NOTE = [
+    '🔐 *DARKNOTE PAIRING SECTOR*',
+    '',
+    'The card above is the pairing app: it boots, cracks open, then asks for the',
+    'passcode. Inside it, type the number you want to link; the button under the',
+    'field unlocks only when the number is complete. Press it and the doors close,',
+    'the loader runs for 5s, and the code panel opens.',
+    '',
+    'A card cannot send anything back to DARKNOTE, so the buttons below are the',
+    'real WhatsApp buttons — they are what talks to the bot. Send the number there',
+    '(or just type it in the chat); WhatsApp issues the pairing code through',
+    'Baileys and DARKNOTE sends the card back with that exact code on it. When the',
+    'phone enters it, the card comes back GREEN.'
+].join('\n')
+
+const pairCardButtons = () => ([
+    { id: 'pair_start', text: '📲 PAIR A NUMBER' },
+    { id: 'pair_users', text: '📱 CONNECTED DEVICES' }
+])
+
+/*
+ * HOW THE CARD IS DELIVERED (config.json -> pairCardMode)
+ * 'rich' (default) | 'document' | 'both' — see lib/pair-card.js for what each one
+ * means. 'rich' is the default because the operator asked for the html to be the
+ * only thing sent: it displays inline, and no .html file is attached.
+ */
+const pairCardMode = () => String(config.pairCardMode || 'rich').toLowerCase()
+
+/*
+ * Whether the gate prints the passcode above the keypad (config.pairShowPasscode).
+ * Defaults to TRUE — the owner asked to see it on the card, and the card is only
+ * ever sent to the owner's own chat. Set it to false to go back to a card whose
+ * source does not contain the digits; the keypad works the same either way.
+ */
+const pairShowPasscode = () => config.pairShowPasscode !== false
+
+/* The line above the Menu 2 file, so an .html attachment is not a mystery. */
+function menu2Caption() {
+    return [
+        '🧩 *DARKNOTE MENU 2*',
+        '',
+        'Tap the file above to open it.',
+        'Sign up with the number this device is paired to.'
+    ].join('\n')
+}
+
+/*
+ * The pairing code the card shows before WhatsApp is asked for one
+ * (config.pairingCode). The operator asked to see the code ON the card; when
+ * Baileys' requestPairingCode returns a real string that one is used instead.
+ */
+const defaultPairCode = () => String(config.pairingCode || '').trim()
+
+/*
+ * THE HANDSEAT THE CARDS ARE DRAWN AS
+ * ----------------------------------
+ * The operator asked for "a samsung and iphone display", so every card is now
+ * wrapped in real handset chrome (lib/phone-frame.js):
+ *
+ *   'ios'    one iPhone screen — dynamic island, 54px corners
+ *   'oneui'  one Galaxy screen  — punch-hole camera, 46px corners
+ *   'both'   both screens, sent as two messages
+ *
+ * `.runtime` shows 'both' by default, because seeing the same moment on both
+ * displays is the point. `.pair` is a single card per stage, so it defaults to
+ * the iPhone; set pairCardSkin to 'oneui' or 'both' to change that.
+ */
+const runtimeSkin = () => String(config.runtimeSkin || 'both').toLowerCase()
+const pairCardSkins = () => {
+    const wanted = String(config.pairCardSkin || 'ios').toLowerCase()
+    if (wanted === 'both') return ['ios', 'oneui']
+    return phoneFrame.SKINS[wanted] ? [wanted] : ['ios']
+}
+
+/*
+ * HOW THE CARDS ARE DELIVERED (config.json -> pairCardMode / runtimeCardMode)
+ * 'rich' (default) | 'document' | 'both'.
+ *
+ * The operator asked for the html to DISPLAY, with no file attached, so 'rich'
+ * is the default now: the card renders inline in the chat. `sendHtmlCard` still
+ * falls back to a document when the rich send throws, so a client that cannot
+ * draw a bot-forwarded message still gets a card rather than nothing.
+ */
+const runtimeCardMode = () => String(config.runtimeCardMode || 'rich').toLowerCase()
+
+/*
+ * The written note that used to accompany the card. The operator asked for it to
+ * be removed so only the html remains, so it is empty by default and comes back
+ * with config.pairCardNote: true. A single space is used rather than '' because a
+ * WhatsApp button message needs a body node.
+ */
+const pairNote = () => (config.pairCardNote === true ? PAIR_CARD_NOTE : ' ')
+
+/* The status-bar clock on the handset shell, in the paired number's own time. */
+const statusClock = (conn) => runtimeCard.statusClock(ownerSystem.pairedNumber(conn) || config.ownerNumber || '')
+
+/* The animated app card, plus the buttons that carry the real actions. */
+async function sendPairApp(conn, m, { skipGate = false, note = pairNote(), buttons = pairCardButtons(), quiet = false, stage = 'app', phone = '', error = '', code = '', codeIssued = false } = {}) {
+    const sessions = pairCard.listSessions()
+    const rows = pairCard.usersHtml(sessions)
+    const linked = pairCard.linkedNumbers(sessions)
+    /*
+     * One card per handset skin. The design is identical for both, so the loop is
+     * purely "which shell to draw it in" — the buttons under the cards are sent
+     * once, after all of them.
+     */
+    const skins = pairCardSkins()
+    const clock = statusClock(conn)
+    for (const skin of skins) {
+        const html = pairCard.pairingAppHtml({
+            avatar: await pairCard.avatarDataUri(),
+            /*
+             * THE CODE IS ON THE CARD.
+             *
+             * config.pairingCode is the default, so the owner can read it the moment
+             * the card opens. When Baileys' requestPairingCode comes back with a
+             * string, that real one is passed in and replaces it — and `codeIssued`
+             * records which of the two it is, so the card never implies WhatsApp has
+             * already issued a code it has not.
+             */
+            code: String(code || '').trim() || defaultPairCode(),
+            codeIssued: String(code || '').trim() ? codeIssued : false,
+            phone,
+            usersHtml: rows,
+            // The numbers already linked, so the card can refuse a duplicate before
+            // the owner wastes a pairing attempt on one.
+            linked,
+            skipGate,
+            stage,
+            error,
+            passcode: pairPasscode(),
+            // config.pairShowPasscode prints the passcode above the keypad, so the
+            // owner does not have to remember it. Default on: the card only ever goes
+            // to the owner's own chat.
+            showPasscode: pairShowPasscode(),
+            // The handset shell, and the owner's own clock in its status bar.
+            skin,
+            statusTime: clock
+        })
+        await pairCard.sendHtmlCard(conn, m.chat, html, { ...quoteGuard.quoteOption(m), mode: pairCardMode(), stage })
+    }
+    if (!quiet && buttons.length) await sendPairButtons(conn, m, note, buttons)
+}
+
+/*
+ * The code card, sent once WhatsApp has actually issued the code. It reuses the
+ * animated panel (no gate) so the code lands in the "developing html" screen the
+ * owner asked for, and the native COPY CODE button sits right under it.
+ */
+async function sendPairCodeCard(conn, m, phone, code) {
+    const sessions = pairCard.listSessions()
+    const html = pairCard.pairingAppHtml({
+        avatar: await pairCard.avatarDataUri(),
+        // THE REAL CODE: this is the string requestPairingCode() returned from
+        // WhatsApp's servers, passed straight through to the card and its copy
+        // button. Nothing else is ever displayed there.
+        code,
+        phone,
+        usersHtml: pairCard.usersHtml(sessions),
+        linked: pairCard.linkedNumbers(sessions),
+        skipGate: true,
+        // 'code' runs the doors -> 5s loading -> code reveal on its own, because
+        // the code already exists by the time this card is built.
+        stage: 'code',
+        passcode: pairPasscode(),
+        showPasscode: pairShowPasscode(),
+        skin: pairCardSkins()[0],
+        statusTime: statusClock(conn)
+    })
+    await pairCard.sendHtmlCard(conn, m.chat, html, { ...quoteGuard.quoteOption(m), mode: pairCardMode(), stage: 'code' })
+    await sendPairButtons(conn, m, [
+        '╭────────────────────────╮',
+        '│ 🔐 *DARKNOTE PAIRING*',
+        '│',
+        `│ 📱 Number: +${phone}`,
+        `│ 🔑 Code: *${code}*`,
+        '│',
+        '│ Open WhatsApp → Linked Devices',
+        '│ → Link a device → Link with phone number.',
+        '╰────────────────────────╯'
+    ].join('\n'), [
+        { copy: String(code), id: `darknote_pair_${code}`, text: '📋 COPY CODE' },
+        { id: 'pair_users', text: '📱 CONNECTED DEVICES' }
+    ])
+}
+
+/* The device list: the card shows the rows, one button per device unpairs it. */
+async function sendPairUsers(conn, m) {
+    const sessions = pairCard.listSessions()
+    await sendPairApp(conn, m, {
+        skipGate: true,
+        quiet: true
+    })
+
+    if (!sessions.length) {
+        return m.bigboreply('ℹ️ No devices are linked yet, so there is nothing to unpair.')
+    }
+
+    const shown = sessions.slice(0, 8)
+    const buttons = shown.map(record => ({
+        id: `unpair ${String(record.id)}`,
+        text: `🗑 ${String(record.phone || record.id).replace(/^\+?/, '+').slice(0, 20)}`
+    }))
+    const extra = sessions.length - shown.length
+
+    await sendPairButtons(conn, m, [
+        '📱 *CONNECTED DEVICES*',
+        '',
+        ...shown.map((record, i) => `${i + 1}. +${String(record.phone || 'unknown').replace(/^\+/, '')} · ${String(record.state || '?').toUpperCase()} · ${record.id}`),
+        extra > 0 ? `\n(+${extra} more than the buttons can carry.)` : '',
+        '',
+        'Tap a device below to unpair it. You will be asked for the passcode first.'
+    ].filter(Boolean).join('\n'), buttons)
+}
+
+/* --------------- the red → green card for a COMPLETED link --------------- */
+
+/*
+ * PENDING LINK WATCH.
+ *
+ * The card cannot observe its own pairing - the sandbox has no way to poll the
+ * bot - so the red→green change is driven from here. When a pairing is started
+ * for a number we remember WHO asked (the message object, which carries both the
+ * chat to answer and the connection the request arrived on), and index.js calls
+ * global.darknotePairLinked() the moment that session actually goes live.
+ *
+ * Bounded and self-expiring: a handful of entries, dropped after 20 minutes, on
+ * first use, or as soon as a newer request for the same number replaces them.
+ */
+const PAIR_WATCH_TTL_MS = 20 * 60 * 1000
+const pairWatch = new Map()
+
+function watchPairLink(phone, m, sessionId) {
+    const digits = String(phone || '').replace(/\D/g, '')
+    if (!digits || !m) return
+    const cutoff = Date.now() - PAIR_WATCH_TTL_MS
+    for (const [key, value] of pairWatch) if (value.at < cutoff) pairWatch.delete(key)
+    pairWatch.set(digits, { m, sessionId: String(sessionId || ''), at: Date.now() })
+}
+
+/** The same panel turned GREEN, sent the moment the device really links. */
+async function sendPairSuccessCard(conn, m, phone) {
+    await sendPairApp(conn, m, {
+        skipGate: true,
+        stage: 'success',
+        phone: String(phone || '').replace(/^\+/, ''),
+        quiet: true
+    })
+    await sendPairButtons(conn, m, [
+        '╭────────────────────────╮',
+        '│ ✅ *DEVICE LINKED*',
+        '│',
+        `│ 📱 +${String(phone || '').replace(/^\+/, '')}`,
+        '│',
+        '│ The code was accepted and this device is now',
+        '│ running DARKNOTE.',
+        '╰────────────────────────╯',
+        '',
+        'The card above is green because the link completed — it also lists every',
+        'device currently connected to this bot.'
+    ].join('\n'), [
+        { id: 'pair_users', text: '📱 CONNECTED DEVICES' },
+        { id: 'pair_start', text: '➕ PAIR ANOTHER' }
+    ])
+}
+
+/** A refusal (not on WhatsApp, already linked, request failed) as a red card. */
+async function sendPairErrorCard(conn, m, phone, reason) {
+    await sendPairApp(conn, m, {
+        skipGate: true,
+        stage: 'error',
+        phone: String(phone || '').replace(/^\+/, ''),
+        error: String(reason || 'The pairing request could not be completed.'),
+        quiet: true
+    })
+    await sendPairButtons(conn, m, [
+        '❌ *PAIRING NOT COMPLETED*',
+        '',
+        String(reason || '').slice(0, 400),
+        '',
+        'Tap below to try a number again.'
+    ].join('\n'), [{ id: 'pair_start', text: '📲 PAIR A NUMBER' }])
+}
+
+/*
+ * Is this number actually on WhatsApp?
+ *
+ * Returns true / false / null, where null means "could not tell" (no helper on
+ * this fork, an error, or a slow query). Only a definite `false` may block a
+ * pairing - guessing in either direction would either refuse a good number or
+ * hand out a code that can never be used.
+ */
+async function numberIsOnWhatsApp(conn, phone, timeoutMs = 8000) {
+    if (typeof conn?.onWhatsApp !== 'function') return null
+    try {
+        const result = await Promise.race([
+            conn.onWhatsApp(`+${String(phone).replace(/\D/g, '')}`),
+            new Promise(resolve => setTimeout(() => resolve('timeout'), timeoutMs))
+        ])
+        if (result === 'timeout') return null
+        const list = Array.isArray(result) ? result : (result ? [result] : [])
+        if (!list.length) return null
+        return list.some(item => item?.exists === true)
+    } catch (error) {
+        console.error('[PAIR] WhatsApp registration check failed:', error?.message || error)
+        return null
+    }
+}
+
+/*
+ * Called by index.js when a watched session goes live. Kept at module scope and
+ * published as a global for the same reason the pairing entry points are: the
+ * session layer must not have to require this dispatcher.
+ */
+global.darknotePairLinked = async (info) => {
+    try {
+        const digits = String(info?.phone || '').replace(/\D/g, '')
+        const sessionId = String(info?.sessionId || '')
+        let key = digits && pairWatch.has(digits) ? digits : ''
+        if (!key && sessionId) {
+            for (const [candidate, value] of pairWatch) {
+                if (value.sessionId && value.sessionId === sessionId) { key = candidate; break }
+            }
+        }
+        if (!key) return
+        const entry = pairWatch.get(key)
+        pairWatch.delete(key)
+        const conn = entry?.m?.__darknoteConn
+        if (!conn || typeof conn.relayMessage !== 'function') return
+        await sendPairSuccessCard(conn, entry.m, digits || key)
+        console.log(`[PAIR] green success card sent for +${digits || key}`)
+    } catch (error) {
+        console.error('[PAIR] success card failed:', error?.message || error)
+    }
 }
 
 module.exports = async (conn, m) => {
@@ -1294,6 +1986,33 @@ module.exports = async (conn, m) => {
             if (pairMatch) {
                 if (!isOwner(m)) return m.bigboreply('❌ Owner only.');
                 const phone = String(pairMatch[1] || '').replace(/\D/g, '');
+
+                /*
+                 * `.pair` ON ITS OWN opens the HTML pairing app.
+                 *
+                 * It used to answer with a usage line, which meant the card could
+                 * never be seen: the only way in was to already know the number.
+                 */
+                if (!phone) {
+                    try {
+                        clearPairPending(m);
+                        await setReaction(conn, m, '⏳');
+                        await sendPairApp(conn, m);
+                        await setReaction(conn, m, '✅');
+                    } catch (error) {
+                        console.error('[PAIR] app card failed:', error?.stack || error);
+                        await setReaction(conn, m, '❌');
+                        // Never leave the owner with no way to pair.
+                        await m.bigboreply([
+                            '❌ The pairing card could not be delivered.',
+                            '',
+                            `Use the text flow instead: ${config.prefix || '.'}pair <international number>`,
+                            `Example: ${config.prefix || '.'}pair 2547XXXXXXXX`
+                        ].join('\n'));
+                    }
+                    return;
+                }
+
                 if (!/^\d{8,15}$/.test(phone)) {
                     return m.bigboreply(`📱 Usage: ${config.prefix || '.'}pair <international number>\nExample: ${config.prefix || '.'}pair 2547XXXXXXXX\n\n(!pair works too.)`);
                 }
@@ -1310,7 +2029,211 @@ module.exports = async (conn, m) => {
                 }
                 return;
             }
+
         }
+
+        /*
+         * PAIRING CARD CONTROLS.
+         *
+         * The card's buttons and the answers to its prompts arrive as ordinary
+         * messages: a button id as the body, or the digits the owner typed
+         * after tapping one. They are handled here, before the dispatcher, for
+         * the same reason `!pair` is - a bare passcode or phone number is not a
+         * command and would otherwise be dropped (or answered by the AI).
+         *
+         * Handled only while the matching prompt is open, or for the two known
+         * button ids, so nothing here can steal an unrelated message.
+         */
+        const pairControl = String(body).trim();
+        const pairHeld = getPairPending(m);
+        const isPairControl = /^pair_(?:start|users)$/i.test(pairControl)
+            || /^unpair\s+\S+/i.test(pairControl)
+            || (pairHeld?.state === 'awaiting-passcode' && /^\d{6}$/.test(pairControl))
+            || (pairHeld?.state === 'awaiting-number' && /^\d{8,15}$/.test(pairControl.replace(/\D/g, '')));
+        if (isPairControl) {
+            if (!isOwner(m)) return m.bigboreply('❌ Owner only.');
+
+            if (/^pair_start$/i.test(pairControl)) {
+                setPairPending(m, { state: 'awaiting-number' });
+                await sendPairButtons(conn, m, [
+                    '📲 *PAIR A NUMBER*',
+                    '',
+                    'Send the number you typed in the card — on its own, or as a command:',
+                    '',
+                    `${config.prefix || '.'}pair 2547XXXXXXXX`,
+                    '',
+                    'This prompt stays open for 5 minutes.'
+                ].join('\n'), [{ id: 'pair_users', text: '📱 CONNECTED DEVICES' }]);
+                return;
+            }
+
+            if (/^pair_users$/i.test(pairControl)) {
+                clearPairPending(m);
+                try {
+                    await sendPairUsers(conn, m);
+                } catch (error) {
+                    console.error('[PAIR] device list failed:', error?.stack || error);
+                    await m.bigboreply('❌ Could not build the device list.');
+                }
+                return;
+            }
+
+            const unpairTarget = pairControl.match(/^unpair\s+(\S+)/i)?.[1];
+            if (unpairTarget) {
+                const record = pairCard.listSessions().find(item => String(item?.id) === unpairTarget);
+
+                /*
+                 * NEVER UNPAIR THE SESSION THIS COMMAND ARRIVED ON, and never
+                 * the primary one. Removing `main` deletes auth/creds.json -
+                 * the bot's own link - so the bot would log itself out and go
+                 * silent with no way back except the console.
+                 */
+                const here = String(conn?.__darknoteSessionId || 'main');
+                if (unpairTarget === 'main' || unpairTarget === here) {
+                    clearPairPending(m);
+                    return m.bigboreply([
+                        `❌ ${unpairTarget} is the session DARKNOTE is running on — unpairing it would`,
+                        'log the bot itself out.',
+                        '',
+                        'Unpair that one from the console if you really mean to.'
+                    ].join('\n'));
+                }
+                if (!record) {
+                    clearPairPending(m);
+                    await m.bigboreply(`ℹ️ ${unpairTarget} is no longer linked.`);
+                    return sendPairUsers(conn, m);
+                }
+
+                setPairPending(m, { state: 'awaiting-passcode', target: unpairTarget });
+                await sendPairButtons(conn, m, [
+                    '🗑 *UNPAIR DEVICE*',
+                    '',
+                    `Number: +${String(record.phone || 'unknown').replace(/^\+/, '')}`,
+                    `Session: ${unpairTarget}`,
+                    '',
+                    'Send the passcode to confirm. It is the same one the card asked for.'
+                ].join('\n'), []);
+                return;
+            }
+
+            if (pairHeld?.state === 'awaiting-passcode' && /^\d{6}$/.test(pairControl)) {
+                const target = pairHeld.target;
+                if (pairControl !== pairPasscode()) {
+                    clearPairPending(m);
+                    await setReaction(conn, m, '❌');
+                    return m.bigboreply('❌ Wrong passcode. Nothing was unpaired.');
+                }
+                clearPairPending(m);
+                const removal = await pairCard.unpairSession(target);
+                const failed = removal && removal.ok === false;
+                await setReaction(conn, m, failed ? '❌' : '✅');
+                await m.bigboreply(failed
+                    ? `❌ Could not unpair ${target}${removal?.detail || removal?.error ? `: ${String(removal.detail || removal.error).slice(0, 160)}` : '.'}`
+                    : `✅ Unpaired ${target}. That device no longer runs DARKNOTE.`);
+                if (!failed) await sendPairUsers(conn, m);
+                return;
+            }
+
+            /*
+             * MENU 2 SIGN-UP. Owner-only and only inside the window the card opened,
+             * so a bare number sent for any other reason is left alone.
+             */
+            /*
+             * FINGERPRINT ON/OFF. The card cannot flip its own switch - it runs
+             * offline - so the Security app tells the operator to send this, and the
+             * next card is rendered with the new state. Available whenever they are
+             * signed up, not only inside the sign-up window.
+             */
+            if (isOwner(m) && menu2.signupFor(conn)) {
+                const toggle = /^fingerprint\s*(on|enable|off|disable)$/i.exec(String(body || '').trim());
+                if (toggle) {
+                    const wanted = /^(on|enable)$/i.test(toggle[1]);
+                    const applied = menu2.setFingerprint(conn, wanted);
+                    if (!applied.ok) {
+                        await m.bigboreply(`❌ The fingerprint setting could not be changed (${applied.reason}).`);
+                        return;
+                    }
+                    await setReaction(conn, m, wanted ? '✅' : '🟡');
+                    const signedNow = menu2.signupFor(conn);
+                    try {
+                        await pairCard.sendHtmlCard(conn, m.chat, menu2.menu2Html({
+                            avatar: signedNow?.avatar || '',
+                            verified: true,
+                            paired: menu2.pairedNumber(conn),
+                            signedAt: signedNow?.verifiedAt || '',
+                            fingerprint: wanted,
+                            live: await menu2.liveStatus(conn)
+                        }), { ...quoteGuard.quoteOption(m), mode: 'document', stage: 'menu2', fileName: 'DARKNOTE-MENU2.html' });
+                    } catch (error) {
+                        console.error('[MENU2] fingerprint card delivery failed:', error?.stack || error);
+                        await m.bigboreply(wanted
+                            ? '✅ Fingerprint unlock is ON, but the card could not be delivered.'
+                            : '🟡 Fingerprint unlock is OFF, but the card could not be delivered.');
+                    }
+                    console.log(`[MENU2] fingerprint ${wanted ? 'enabled' : 'disabled'} via chat`);
+                    return;
+                }
+            }
+
+            if (isOwner(m) && menu2.waiting(m.chat)) {
+                // The DP is read NOW and frozen into the record, so the sign-up card
+                // keeps the picture the account had at this moment.
+                const signupAvatar = await pairCard.avatarDataUri().catch(() => '');
+                const outcome = menu2.consume(conn, m.chat, body, { avatar: signupAvatar });
+                if (outcome) {
+                    await setReaction(conn, m, outcome.ok ? '✅' : '❌');
+                    /*
+                     * HTML ONLY, including the refusal: a wrong number reopens the card
+                     * in its "try again" state, which says what did not match, instead of
+                     * a text reply. The reason is only described in the log, so the card
+                     * never prints the paired number in full.
+                     */
+                    const card = outcome.ok
+                        ? menu2.menu2Html({
+                            avatar: outcome.record.avatar || signupAvatar,
+                            verified: true,
+                            paired: menu2.pairedNumber(conn),
+                            signedAt: outcome.record.verifiedAt,
+                            live: await menu2.liveStatus(conn)
+                        })
+                        : menu2.menu2Html({
+                            avatar: signupAvatar,
+                            verified: false,
+                            paired: menu2.pairedNumber(conn),
+                            stage: outcome.reason === 'mismatch' ? 'mismatch' : 'signup',
+                            note: outcome.reason === 'mismatch'
+                                ? 'That number is not the one this session is paired to.'
+                                : `That does not look like a usable number (${outcome.reason}).`
+                        });
+                    try {
+                        await pairCard.sendHtmlCard(conn, m.chat, card, { ...quoteGuard.quoteOption(m), mode: 'document', stage: 'menu2', fileName: 'DARKNOTE-MENU2.html' });
+                        console.log(`[MENU2] ${outcome.ok ? 'signed up' : 'refused (' + outcome.reason + ')'} - card sent`);
+                    } catch (error) {
+                        console.error('[MENU2] card delivery failed:', error?.stack || error);
+                        await m.bigboreply(outcome.ok
+                            ? `✅ Signed up with +${outcome.record.number}, but the card could not be delivered.`
+                            : `❌ Not verified (${outcome.reason}) and the card could not be delivered.`);
+                    }
+                    return;
+                }
+            }
+
+            if (pairHeld?.state === 'awaiting-number') {
+                const pendingNumber = pairControl.replace(/\D/g, '');
+                clearPairPending(m);
+                try {
+                    await setReaction(conn, m, '⏳');
+                    await sendPairProgress(conn, m, pendingNumber);
+                    await setReaction(conn, m, '✅');
+                } catch (error) {
+                    console.error('[PAIR] card pairing failed:', error?.stack || error);
+                    await setReaction(conn, m, '❌');
+                    await m.bigboreply(`❌ Pairing failed: ${String(error?.message || error).slice(0, 180)}`);
+                }
+                return;
+            }
+        }
+
 
         // Per-session emergency pause. These are deliberately slash-prefixed
         // WhatsApp controls and do not alter the normal configured command prefix.
@@ -1484,9 +2407,79 @@ module.exports = async (conn, m) => {
 
             // Modern interactive card (the legacy buttonsMessage no longer renders).
             await sendMenuCard(conn, m, info.text, [
-                { id: 'allmenu', text: '📚 All Menu' }
+                { id: 'allmenu', text: '📚 All Menu' },
+                // Reserved by the operator; the behaviour is decided later.
+                { id: 'menu2', text: '🧩 Menu 2' }
             ])
             break
+        }
+
+        /*
+         * MENU 2 — THE BUTTON EXISTS, THE BEHAVIOUR IS NOT DECIDED YET.
+         *
+         * It is wired end to end (button -> id -> this case -> reply), which is the
+         * part worth doing now: whatever this menu ends up doing is then a single
+         * edit here, and the card does not have to be touched again. Until it is
+         * defined it says so plainly rather than opening an empty screen or
+         * pretending to have worked.
+         */
+        /*
+         * WHY MENU 2 IS SENT AS A DOCUMENT.
+         *
+         * The inline (rich) card is a Meta-AI bot message: it DRAWS the markup but it is
+         * not an interactive webview, so a tap inside it does nothing - which is exactly
+         * why the number bar could not be activated and the keypad never appeared. The
+         * document path opens the same HTML in a real browser, where the input focuses,
+         * the keyboard comes up and every handler runs. Interactivity is the whole point
+         * of this card, so it goes out as the file.
+         */
+        case 'menu2': {
+            /*
+             * The sign-up card. Already signed up for this paired number -> the card
+             * opens in its verified state and nothing is asked. Not signed up -> the
+             * card asks for the number, and the chat is put in a five-minute window
+             * so the reply is read as the sign-up.
+             */
+            /*
+             * HTML ONLY. The operator asked for this flow to answer with the card and
+             * nothing else, so there is no accompanying text message: the card itself
+             * carries the instruction, and the chat is simply put into its five-minute
+             * window so the number can be entered.
+             */
+            const signed = menu2.signupFor(conn);
+            const menu2Avatar = await pairCard.avatarDataUri().catch(() => '');
+            const html = menu2.menu2Html({
+                // Signed up: the FROZEN DP from sign-up, not today's picture.
+                avatar: signed?.avatar || menu2Avatar,
+                verified: Boolean(signed),
+                paired: menu2.pairedNumber(conn),
+                signedAt: signed?.verifiedAt || '',
+                stage: 'signup',
+                // The lock screen only demands a finger when it was switched on.
+                fingerprint: signed?.fingerprint === true,
+                /*
+                 * Real figures for the status bar: the process's own uptime, and a
+                 * measured round trip to WhatsApp. Both are nulls rather than guesses
+                 * when they cannot be obtained.
+                 */
+                live: signed ? await menu2.liveStatus(conn) : null
+            });
+            try {
+                /*
+                 * HTML ONLY: no caption, no accompanying message. The operator asked for
+                 * the response to be just the file. The card itself carries every
+                 * instruction, so nothing is lost but the duplicate line in the chat.
+                 */
+                await pairCard.sendHtmlCard(conn, m.chat, html, { ...quoteGuard.quoteOption(m), mode: 'document', stage: 'menu2', fileName: 'DARKNOTE-MENU2.html' });
+            } catch (error) {
+                // The one case that still speaks in text: the card could not be sent at
+                // all, and silence would leave the operator guessing.
+                console.error('[MENU2] card delivery failed:', error?.stack || error);
+                return bigboreply(`❌ The Menu 2 card could not be delivered: ${String(error?.message || error).slice(0, 160)}`);
+            }
+            console.log(`[MENU2] opened (${signed ? 'already signed up' : 'sign-up requested'})`);
+            if (!signed) menu2.begin(m.chat);
+            return;
         }
 
         /*
@@ -1547,8 +2540,51 @@ module.exports = async (conn, m) => {
             return bigboreply(result.message);
         }
 
+        /*
+         * `.runtime` draws the LIVE SCENE instead of printing three lines of text:
+         * the sky at the paired number's real local hour, the sun or moon riding
+         * its arc with the DARKNOTE name beside it, the real weather and
+         * temperature for that country, and the two characters whose day follows
+         * the clock (see lib/runtime-card.js).
+         *
+         * `.runtime <place>` pins the weather to a place the operator names.
+         * `.alive` keeps the plain-text diagnostic — that one is meant to be read
+         * by scripts and logs, where a picture is no use.
+         */
+        case 'runtime': {
+            if (!isOwner(m)) return bigboreply('❌ Owner only.');
+            try {
+                const paired = ownerSystem.pairedNumber(conn) || config.ownerNumber || '';
+                const data = await runtimeCard.snapshot({
+                    number: paired,
+                    place: args.join(' ').trim(),
+                    fallbackZone: config.timezone || ''
+                });
+                data.uptimeSeconds = process.uptime();
+                data.whatsapp = runtimeMonitor.getState()?.whatsapp || 'unknown';
+                data.botName = config.botName || 'DARKNOTE';
+                const result = await runtimeCard.sendRuntimeCard(conn, m.chat, data, {
+                    mode: runtimeCardMode(),
+                    // One screen per handset, so 'both' sends the iPhone and the Galaxy
+                    // of the SAME moment — that is what "a samsung and iphone display" is.
+                    skins: phoneFrame.resolveSkins(runtimeSkin()),
+                    // `.quoted` is the WAMessage itself. Passing the whole
+                    // `quoteOption(m)` object here nested it one level too deep and
+                    // broke every send in this path (see quoteGuard.unwrapQuote).
+                    quoted: quoteGuard.quoteOption(m).quoted
+                });
+                if (!result.delivered.length) throw new Error('no delivery path succeeded');
+                return;
+            } catch (error) {
+                console.error('[RUNTIME] card failed:', error?.stack || error);
+                // Never leave the owner with nothing: fall back to the text that
+                // this command used to print.
+                const health = runtimeMonitor.getState();
+                return bigboreply(`${runtimeMonitor.statusText()}\n\nLast error: ${health.lastError || 'none'}\nReconnects: ${health.reconnects}`);
+            }
+        }
+
         // Runtime Alive status - the real socket state, not a guess.
-        case 'runtime':
         case 'alive': {
             if (!isOwner(m)) return bigboreply('❌ Owner only.');
             const health = runtimeMonitor.getState();
@@ -1565,46 +2601,29 @@ module.exports = async (conn, m) => {
             return bigboreply(text);
         }
 
+        /*
+         * .tagall / .callall - GROUP BROADCASTS.
+         *
+         * This SUPERSEDES the card-based tagall. The owner supplied
+         * tagAllMembers() and callAll() (see the TAGALL / CALLALL COMMANDS block
+         * near the top of this file), so the boxed layout, the numbered member
+         * list and the admin gate now come from there. Both send exactly one
+         * message and carry a real `mentions` array.
+         *
+         * `await` + `break` is kept from the previous implementation.
+         */
         case 'tagall': {
-            if (!m.isGroup) return bigboreply('❌ This command can only be used in groups.');
-            try {
-                const metadata = await conn.groupMetadata(m.chat);
-                // Owner request: .tagall does NOT require group admin. Group-only is
-                // still enforced above, and the bot still needs to be a member to
-                // resolve and mention the participants.
-                // Bot identities in the same form resolveMembers() compares, so
-                // the bot never tags itself.
-                const botJid = display.bare(conn.user?.id || '');
-                const botLid = display.bare(conn.user?.lid || '');
-                /*
-                 * VERTICAL PLAIN TEXT, not cards.
-                 *
-                 * resolveMembers() returns one entry per real member with the
-                 * WhatsApp display name and a mention token. The JIDs go into
-                 * `mentions` ONLY - the visible text carries the token, which
-                 * WhatsApp replaces with the person's own name, so no number and
-                 * no JID is ever displayed.
-                 *
-                 * Sent with one sendMessage call, so one command produces exactly
-                 * one message.
-                 */
-                const members = display.resolveMembers(conn, metadata.participants, { excludeJids: [botJid, botLid].filter(Boolean) });
-                if (!members.length) return bigboreply('❌ No members were found to mention.');
+            await tagAllMembers(conn, m, args);
+            break;
+        }
 
-                const text = display.memberBox('TAGALL', members, {
-                    summary: `Total: ${members.length} member${members.length === 1 ? '' : 's'}`
-                });
-                if (display.containsJid(text)) {
-                    // Should be impossible; if it ever happens, refuse to send
-                    // rather than leak an identifier.
-                    console.error('[TAGALL] refusing to send text containing a JID');
-                    return bigboreply('❌ Failed to tag the group members. Please try again.');
-                }
-                await conn.sendMessage(m.chat, { text, mentions: display.mentionsOf(members) }, { quoted: m });
-            } catch (error) {
-                console.error('[TAGALL] Error:', error?.stack || error);
-                return bigboreply('❌ Failed to tag the group members. Please try again.');
-            }
+        /*
+         * .callall - the same broadcast, re-quoting the message you replied to.
+         * Requires a reply; the replied-to caption/text (or a "[media message]"
+         * marker when it carried no text) is embedded in the broadcast.
+         */
+        case 'callall': {
+            await callAll(conn, m);
             break;
         }
 
@@ -1623,7 +2642,14 @@ module.exports = async (conn, m) => {
                  * only ever report nobody online. collectPresence() asks first,
                  * waits for the answers, then reports what actually arrived.
                  */
-                const presence = await groupFeatures.collectPresence(conn, metadata);
+                /*
+                 * A LONGER WAIT. Presence is push-based: WhatsApp answers the
+                 * subscription when it gets round to it, and the default window
+                 * closed before the slower members reported, which showed a
+                 * SHORTER list than was really online. Waiting costs one command
+                 * invocation and nothing else.
+                 */
+                const presence = await groupFeatures.collectPresence(conn, metadata, { waitMs: 6000 });
                 const online = presence.online
                     .filter(p => normalizeJidForCompare(groupFeatures.participantJid(p)) !== botJid);
                 if (!online.length) return bigboreply(groupFeatures.describeEmptyPresence(presence));
@@ -1631,8 +2657,19 @@ module.exports = async (conn, m) => {
                 const cardResult = await cards.sendMemberPages(conn, m, {
                     heading: '🟢 ONLINE MEMBERS',
                     entries,
-                    mode: cardsMode(),
-                    summary: `Total online: ${entries.length}`,
+                    /*
+                     * VERTICAL, ALWAYS - never the horizontal carousel.
+                     *
+                     * The carousel is what made this command look broken: on a
+                     * client that does not render card carousels the send still
+                     * reports success while showing nothing usable, so "no online
+                     * members" was really "a card you cannot see". Text pages are
+                     * a plain vertical list in which every line is a REAL @mention,
+                     * so the members are mentioned and always render. Override with
+                     * config.json -> cards.mode if a carousel is ever wanted back.
+                     */
+                    mode: 'text',
+                    summary: `Total online: ${entries.length} · checked ${presence.requested} of ${(metadata.participants || []).length} members`,
                     emptyMessage: groupFeatures.describeEmptyPresence(presence),
                     failureMessage: '❌ Failed to read the group online list.',
                     reply: bigboreply
@@ -2559,11 +3596,34 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
             const mode = String(args[args.length - 1] || '').toLowerCase();
             const feature = security.FEATURES[command];
             if (!feature) return bigboreply('❌ Unknown anti-feature.');
+            /*
+             * ANTI-MENTION-STATUS HAS MODES, THE OTHERS ARE on/off.
+             * warn / delete / kick are ONE setting, so they are mutually
+             * exclusive by construction: turning delete on turns kick off, and
+             * there is no order of commands that can have both on at once.
+             */
+            if (command === 'antimentionstatus' && security.MENTION_MODES.includes(mode)) {
+                security.setFeatureMode(command, mode);
+                const notes = {
+                    warn: 'warns the sender and counts up; the 3rd warning removes them from the group.',
+                    delete: 'deletes the status mention as soon as it is detected (and warns when the suite\'s warn switch is on). Members are never removed in this mode.',
+                    kick: 'deletes the status mention and removes the sender immediately.'
+                };
+                return bigboreply(`✅ *${feature.label}* is now ON in ${mode.toUpperCase()} mode.\n\n${notes[mode]}\n\nOnly one mode can be on — switching modes turns the others off, so kick is OFF while delete is on.`);
+            }
             if (!['on', 'off'].includes(mode)) {
                 const current = security.getSettings()[command];
-                return bigboreply(`*${feature.label}: ${current?.enabled ? 'ON' : 'OFF'}*\n\nUsage: ${config.prefix || '.'}${command} on|off\n\nEscalation: warn → delete → kick`);
+                const currentMode = command === 'antimentionstatus' ? security.modeOf(security.getSettings(), command) : null;
+                const status = command === 'antimentionstatus'
+                    ? `Current: ${currentMode === 'off' ? 'OFF' : currentMode.toUpperCase()}`
+                    : `Current: ${current?.enabled ? 'ON' : 'OFF'}`;
+                const usage = command === 'antimentionstatus'
+                    ? `${config.prefix || '.'}antimentionstatus warn|delete|kick|off`
+                    : `${config.prefix || '.'}${command} on|off`;
+                return bigboreply(`*${feature.label}*\n\n${status}\n\nUsage: ${usage}\n\nEscalation: warn → delete → kick`);
             }
-            security.setFeature(command, mode === 'on');
+            if (command === 'antimentionstatus') security.setFeatureMode(command, mode === 'on' ? 'warn' : 'off');
+            else security.setFeature(command, mode === 'on');
             return bigboreply(`✅ ${feature.label} is now ${mode === 'on' ? 'ON' : 'OFF'}`);
         }
 
@@ -2604,17 +3664,31 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
             if (m.isGroup) {
                 return bigboreply('❌ Outbound GROUP calls are not supported by this Baileys build.\n\nThe installed version exposes offerCall for a single JID only. No group-call API exists, so this is refused instead of faking a call with a voice note.');
             }
-            if (typeof conn.offerCall !== 'function') {
-                return bigboreply('❌ This Baileys build does not expose outbound calling.');
+            /*
+             * RINGS, BUT CARRIES NO VOICE.
+             *
+             * The build exposes no offerCall, so the offer is sent through the same
+             * primitive the library's own rejectCall uses (see lib/outbound-call.js).
+             * The far end rings for real; there is no call media stack, so nothing
+             * can be heard and the call is terminated after ringing out. The reply
+             * says exactly that instead of claiming a conversation.
+             */
+            if (!outboundCall.canCall(conn)) {
+                return bigboreply('❌ This Baileys build exposes no way to send call stanzas, so outbound calling is not available.');
             }
             const target = m.quoted?.sender || (args[0] ? `${String(args[0]).replace(/[^0-9]/g, '')}@s.whatsapp.net` : m.chat);
             if (!target) return bigboreply(`Usage: send this in a DM, or quote the person with ${config.prefix || '.'}call`);
             try {
-                await conn.offerCall(target);
-                return bigboreply(`📞 Calling ${String(target).split('@')[0]}…`);
+                const seconds = Number(String(args.find(a => /^\d+s?$/i.test(String(a))) || '').replace(/\D/g, '')) || 0;
+                const ring = await outboundCall.offerCall(conn, target, seconds ? { ringMs: seconds * 1000 } : {});
+                return bigboreply([
+                    `📞 Ringing ${String(ring.to).split('@')[0]} for ${Math.round(ring.ringMs / 1000)}s…`,
+                    '',
+                    '⚠️ This build has no call audio path, so the call cannot carry a conversation — it rings and then drops, showing as a missed call on their end.'
+                ].join('\n'));
             } catch (error) {
                 console.error('[CALL] failed:', error?.stack || error);
-                return bigboreply('❌ The call could not be started.');
+                return bigboreply(`❌ ${error?.message || 'the call could not be started'}`);
             }
         }
 
@@ -2903,36 +3977,49 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
 
                         // ── Tunables ──
                         /*
-                         * THE WHOLE SONG IS EMBEDDED - there is no clip and no time
-                         * limit. That is only possible by embedding it, because the
-                         * HTML app runs in an offline sandbox (no fetch, no XHR), so
-                         * the audio has to travel inside the markup as base64.
+                         * CLEAR FIRST, LONG SECOND.
                          *
-                         * That makes the card's size the thing that limits quality.
+                         * The audio has to travel inside the markup as base64,
+                         * because the HTML app runs in an offline sandbox (no fetch,
+                         * no XHR). That makes the card's size the thing that limits
+                         * the embed, and this card type is capped at roughly 256 KB.
                          * Measured on a 3:24 track:
                          *
                          *   opus 32k -> 1122 KB card     opus 12k ->  466 KB card
                          *   opus 16k ->  587 KB card     opus  8k ->  331 KB card
                          *                                opus  6k ->  276 KB card
                          *
-                         * The documented ceiling for this card type is about 256 KB,
-                         * so a full length song only fits at roughly 6 kbps: audible,
-                         * but badly degraded. Rather than hard-code that, the encode
-                         * targets a card budget and takes the highest bitrate that
-                         * fits, so a short track automatically gets better quality
-                         * than a long one. Opus is used because it holds up far
-                         * better than MP3 at these rates.
+                         * Spending the whole 256 KB on a full length song lands at
+                         * ~3-5 kbps, which is audibly degraded. That is a trade of
+                         * LENGTH against CLARITY, and the card is asked for the whole
+                         * song: it renders a player with a running time, and one that
+                         * stops a third of the way in reads as broken even though
+                         * every byte of it is correct. The full running time is the
+                         * promise, so the budget is spent on the WHOLE track at
+                         * whatever rate its length allows (see the table above).
                          *
-                         * Raise CARD_BUDGET_KB if your client takes larger cards and
-                         * you would rather trade size for quality.
+                         * A short song, which would fit whole for less than
+                         * EMBED_QUALITY_BPS, is capped there instead of spending bytes
+                         * on a needlessly high rate.
+                         *
+                         * EMBED_QUALITY_BPS is therefore a QUALITY CAP, not a floor:
+                         * it can only lower the rate, never shorten the song. The one
+                         * thing that still trims is a track so long that even
+                         * MIN_AUDIO_BPS cannot fit it (past ~8 minutes); those cards
+                         * carry the opening stretch, and the full download always
+                         * accompanies the card as the audio message underneath.
+                         *
+                         * Opus is used because it holds up far better than MP3 at
+                         * these rates.
                          */
+                        const EMBED_QUALITY_BPS = 32000;
                         const CARD_BUDGET_KB = 240;
                         // markup (~18 KB measured) + thumbnail (~13 KB base64) + slack.
                         const CARD_OVERHEAD_KB = 62;
-                        // The floor exists only so an extremely long track cannot
-                        // drive the bitrate to nothing. It must stay BELOW what the
-                        // budget maths asks for on a normal song, otherwise it
-                        // overrides the budget and the card overshoots.
+                        // The last resort for a very long track: the lowest rate the
+                        // budget will be asked to carry. On its own it never shortens
+                        // a song - only a track whose full length at this rate exceeds
+                        // the budget is trimmed.
                         const MIN_AUDIO_BPS = 2800;
                         /*
                          * The encode is CBR (-vbr off), because a VBR encode's
@@ -2945,29 +4032,21 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
                          * these rates, so -frame_duration 60 goes with it.
                          */
                         const CBR_OVERSHOOT = 1.12;
-                        /*
-                         * Longest track that still fits one card at the floor.
-                         * This uses the MEASURED cost of the non-audio part of
-                         * the card (~18 KB markup + ~10 KB inlined thumbnail),
-                         * not CARD_OVERHEAD_KB, because that constant carries a
-                         * safety margin for the quality decision above and would
-                         * understate the real ceiling.
-                         */
-                        const CARD_CEILING_KB = 256;
-                        const CARD_FIXED_KB = 30;
-                        const maxSongSeconds = () => Math.floor(
-                            (((CARD_CEILING_KB - CARD_FIXED_KB) * 1024) * 3 / 4)
-                            / (MIN_AUDIO_BPS * CBR_OVERSHOOT / 8));
                         const MAX_AUDIO_BPS = 96000;
+
+                        /* Audio bytes the card can carry once base64 inflates them by 4/3. */
+                        const audioBinaryBytes = () => Math.floor(
+                            Math.max(8 * 1024, (CARD_BUDGET_KB - CARD_OVERHEAD_KB) * 1024) * 3 / 4);
 
                         /* Highest bitrate whose base64 fits the card budget. */
                         const bitrateForDuration = (seconds) => {
-                            const audioB64Bytes = Math.max(8 * 1024, (CARD_BUDGET_KB - CARD_OVERHEAD_KB) * 1024);
-                            // base64 inflates the payload by 4/3.
-                            const binaryBytes = Math.floor(audioB64Bytes * 3 / 4);
-                            const bps = Math.floor((binaryBytes * 8) / (Math.max(1, seconds) * CBR_OVERSHOOT));
+                            const bps = Math.floor((audioBinaryBytes() * 8) / (Math.max(1, seconds) * CBR_OVERSHOOT));
                             return Math.min(MAX_AUDIO_BPS, Math.max(MIN_AUDIO_BPS, bps));
                         };
+
+                        /* How many seconds of audio fit at a given bitrate. */
+                        const secondsAtBitrate = (bps) => Math.floor(
+                            (audioBinaryBytes() * 8) / (Math.max(1, bps) * CBR_OVERSHOOT));
 
                         const query = args.join(' ').trim();
 
@@ -2980,13 +4059,14 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
                          * Re-encode the track as small mono Opus so it can be embedded
                          * in the card as base64.
                          *
-                         * `limitSeconds` trims the embed to what a single card can
-                         * physically hold. It is only reached by tracks past the ~7
-                         * minute ceiling - a long SoundCloud upload, say - and without
-                         * it the base64 would run to megabytes and WhatsApp would drop
-                         * the card. The FULL track still goes out as the audio message
-                         * underneath, so nothing is lost; the card just carries the
-                         * opening stretch instead of failing outright.
+                         * `limitSeconds` is passed only for a track so long that it
+                         * cannot fit a single card at any usable rate (past ~8
+                         * minutes - a long SoundCloud upload, say); without the trim
+                         * the base64 would run to megabytes and WhatsApp would drop
+                         * the card. 0 means no trim at all, which is the normal case:
+                         * every ordinary song is embedded end to end. When a track is
+                         * trimmed, the FULL download still goes out as the audio
+                         * message underneath, so nothing is lost.
                          */
                         const encodeAudio = (input, bitrate, limitSeconds = 0) => new Promise((resolve, reject) => {
                             let bin;
@@ -3023,14 +4103,16 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
                         //  RESOLVE THE TRACK
                         // ═══════════════════════════════════════════════════════
                         let track = null;       // real song, when one was chosen
-                        let encodedBase64 = ''; // the whole song, embedded in the card
+                        let encodedBase64 = ''; // the audio the card carries, embedded as base64
                         let songSeconds = 0;    // its length, for the timer
+                        let embeddedSeconds = 0; // how much of it the card actually holds
                         /*
                          * The ORIGINAL download, kept so the full-quality track can be
                          * sent as a native audio message under the card. The card's copy
-                         * is squeezed to ~3-6 kbps to fit the markup, so it is a preview;
-                         * the audio message is what actually sounds good, and it is the
-                         * only way to hear a song longer than the card's ~7 minute ceiling.
+                         * is a short, clear excerpt rather than the whole song, because
+                         * the markup cannot carry a full track at a listenable bitrate;
+                         * the audio message is what plays the song end to end, and it is
+                         * the only way to hear a track longer than what the card holds.
                          */
                         let fullTrack = null;
                         /*
@@ -3140,14 +4222,34 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
                                 console.log(`[PLAY] audio ready: ${(audio.buffer.length / 1024 / 1024).toFixed(2)} MB for ${songSeconds || '?'}s`);
                                 try {
                                     if (!songSeconds) throw new Error('unknown duration, cannot size the encode');
-                                    const cardCeiling = maxSongSeconds();
-                                    const cardSeconds = Math.min(songSeconds, cardCeiling);
-                                    if (songSeconds > cardCeiling) {
-                                        console.warn(`[PLAY] ${songSeconds}s is past the ~${cardCeiling}s a single card holds - embedding the first ${cardCeiling}s, the full track goes out as the audio message`);
+                                    /*
+                                     * THE WHOLE SONG GOES IN.
+                                     *
+                                     * `Math.min` here, where it used to be `Math.max`:
+                                     * the cap may only bring the rate DOWN to fit the
+                                     * track, and never forces an excerpt by holding the
+                                     * rate up. A 3:24 song therefore embeds at ~4.7 kbps
+                                     * whole rather than 32 kbps for its first 30 s -
+                                     * degraded mono, but the full running time, which is
+                                     * what the card's player promises.
+                                     *
+                                     * `Math.ceil` on the ceiling, and passing 0 seconds
+                                     * as the limit when the whole file fits, keep a
+                                     * rounding error from shaving a second off the end
+                                     * (the real audio is often a few seconds longer than
+                                     * the video's metadata).
+                                     */
+                                    const bps = Math.min(EMBED_QUALITY_BPS, bitrateForDuration(songSeconds));
+                                    const cardCeiling = Math.ceil(secondsAtBitrate(bps));
+                                    const wholeSong = cardCeiling >= songSeconds;
+                                    const cardSeconds = wholeSong ? songSeconds : cardCeiling;
+                                    if (!wholeSong) {
+                                        console.log(`[PLAY] ${songSeconds}s is too long for one card even at the ${Math.round(bps / 1000)} kbps floor - the card carries the opening ${cardSeconds}s, the full track goes out as the audio message underneath`);
                                     }
-                                    const bps = bitrateForDuration(cardSeconds);
-                                    const encoded = await encodeAudio(audio.buffer, bps, cardSeconds);
+                                    // 0 = encode the download in full, with no -t trim at all.
+                                    const encoded = await encodeAudio(audio.buffer, bps, wholeSong ? 0 : cardSeconds);
                                     encodedBase64 = encoded.toString('base64');
+                                    embeddedSeconds = cardSeconds;
                                     const estimatedKB = (encodedBase64.length / 1024) + CARD_OVERHEAD_KB;
                                     console.log(`[PLAY] ${isPreview ? 'official preview' : 'song'} embedded: ${cardSeconds}s @ ${Math.round(bps / 1000)} kbps opus -> ${(encoded.length / 1024).toFixed(0)} KB (${(encodedBase64.length / 1024).toFixed(0)} KB base64) | card ~${estimatedKB.toFixed(0)} KB`);
                                 } catch (error) {
@@ -3218,10 +4320,10 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
                             const response = await fetch(thumbUrl);
                             if (response.ok) {
                                 const source = Buffer.from(await response.arrayBuffer());
-                                // Deliberately small: with the whole song embedded,
-                                // every KB the thumbnail takes is a KB the audio
-                                // cannot have, and the audio is the point. 480x270
-                                // q58 is ~13 KB base64 versus ~34 KB at 640x360 q68.
+                                // Deliberately small: every KB the thumbnail takes is
+                                // a KB the embedded audio cannot have, and the audio
+                                // is the point. 480x270 q58 is ~13 KB base64 versus
+                                // ~34 KB at 640x360 q68.
                                 const jpeg = await sharp(source)
                                     .resize(480, 270, { fit: 'cover' })
                                     .jpeg({ quality: 58 })
@@ -3238,7 +4340,9 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
                         // have no timings, so the lyric panel is hidden rather than
                         // showing words that do not line up with what plays.
                         const hasTimedLyrics = LYRICS.length > 0;
-                        // The timer spans the WHOLE song when it is embedded.
+                        // The timer starts from the song's length and the in-page
+                        // decoder corrects it to the length of what is embedded, so
+                        // an excerpt cannot make the card claim the full runtime.
                         const totalSeconds = encodedBase64
                             ? songSeconds
                             : (hasTimedLyrics ? (LYRICS[LYRICS.length - 1].t + 8) : 30);
@@ -3247,10 +4351,14 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
                             ? `background-image:url('${thumbData}');background-size:cover;background-position:center;`
                             : 'background:linear-gradient(135deg,#1db954,#0b3d20 55%,#05050a);';
                         // The card must not claim more than it carries: a 30 s preview is
-                        // labelled as one, and the badge shows 30s instead of the
-                        // YouTube video's full running time.
+                        // labelled as one, the badge shows 30s instead of the YouTube
+                        // video's full running time, and a card holding only the opening
+                        // of a longer track says so rather than calling itself the song.
+                        const holdsWholeTrack = encodedBase64 && embeddedSeconds >= songSeconds;
                         const sourceLabel = encodedBase64
-                            ? (isPreview ? 'Official preview · in-card' : 'Full song · in-card')
+                            ? (isPreview
+                                ? 'Official preview · in-card'
+                                : (holdsWholeTrack ? 'Full song · in-card' : `First ${embeddedSeconds}s · in-card`))
                             : 'Synth engine';
                         const badgeLabel = isPreview ? '0:30 preview' : (track ? (SONG.duration || 'YouTube') : 'Demo');
 
@@ -3408,14 +4516,17 @@ html,body{margin:0;padding:0;background:transparent;color:var(--ink);font-family
   }
   renderWindow(0);
 
-  /* ══════════════════════════════════════════════════════════════
-     AUDIO.
-     With a real track, AUDIO_B64 holds the WHOLE song: it is decoded
-     with Web Audio and played through a BufferSource, so the button
-     plays the real recording end to end. Remote URLs cannot be used
-     here - the sandbox has no network at all.
-     Without one, the music is synthesised in the card instead.
-     ══════════════════════════════════════════════════════════════ */
+   /* ══════════════════════════════════════════════════════════════
+      AUDIO.
+      With a real track, AUDIO_B64 holds the WHOLE recording, at
+      whatever bitrate the card's byte budget leaves for it (only a
+      track too long to fit at any usable rate is cut short). It is
+      decoded with Web Audio and played through a BufferSource, and
+      the decoded length - not the metadata - is what the timer is
+      set from, so the card never claims more than it holds. Remote URLs cannot be
+      used here - the sandbox has no network at all.
+      Without one, the music is synthesised in the card instead.
+      ══════════════════════════════════════════════════════════════ */
   var actx = null, master = null, analyser = null, freqData = null, HAT = null;
   var playing = false, pendingPlay = false;
   var clipBuf = null, clipNode = null, clipOffset = 0, clipStart = 0, stopping = false;
@@ -3695,27 +4806,45 @@ html,body{margin:0;padding:0;background:transparent;color:var(--ink);font-family
                             notification: false
                         });
 
-                        console.log(`[PLAY] card sent (${(htmlPayload.length / 1024).toFixed(0)} KB, thumbnail ${thumbData ? 'inlined' : 'CSS fallback'}, audio ${encodedBase64 ? 'whole song embedded' : 'synth'})`);
+                        console.log(`[PLAY] card sent (${(htmlPayload.length / 1024).toFixed(0)} KB, thumbnail ${thumbData ? 'inlined' : 'CSS fallback'}, audio ${encodedBase64 ? `${embeddedSeconds}s in-card` : 'synth'})`);
 
                         /*
                          * THE FULL TRACK, UNDERNEATH THE CARD.
                          *
-                         * The card's audio is the same recording, but it only fits the
-                         * markup as a ~3-6 kbps mono Opus - audible, yet obviously
-                         * degraded. This message carries the untouched download at full
-                         * quality, and unlike the card it is not limited to the card's
-                         * ~7 minute ceiling. It is sent only when a real track was
-                         * downloaded, so the demo card still sends just the card.
+                         * The card's audio is the same recording, embedded whole but at
+                         * whatever bitrate the card's byte budget allows (~5 kbps for a
+                         * normal song). This message carries the untouched download at
+                         * full quality and full length, and is what to listen to; it is
+                         * sent only when a real track was downloaded, so the demo card
+                         * still sends just the card.
                          */
                         if (fullTrack) {
                             try {
+                                /*
+                                 * Sent as OGG/Opus, the same form the card carries.
+                                 *
+                                 * The download is Opus already (YouTube serves it in a
+                                 * WebM container), but a WebM audio message is a
+                                 * container some clients will not play, and labelling
+                                 * it `.mp3` made it worse. One transcode to OGG/Opus at
+                                 * 64 kbps STEREO gives a file WhatsApp always plays and
+                                 * that still sounds like music - the card's copy stays
+                                 * mono, because it has to fit a base64 budget.
+                                 *
+                                 * `toOpusOgg` never throws: on any ffmpeg failure the
+                                 * original bytes and their real mimetype are used, so
+                                 * the song still arrives.
+                                 */
+                                const sent = await toOpusOgg(fullTrack.buffer, { bitrate: 64000, channels: 2 });
+                                const bytes = sent?.buffer || fullTrack.buffer;
+                                const opus = Boolean(sent?.opus);
                                 await conn.sendMessage(m.chat, {
-                                    audio: fullTrack.buffer,
-                                    mimetype: fullTrack.mimetype || 'audio/mpeg',
-                                    fileName: `${safeVideoFilename(SONG.artist + ' - ' + SONG.title)}.mp3`,
+                                    audio: bytes,
+                                    mimetype: opus ? 'audio/ogg' : (fullTrack.mimetype || 'audio/mpeg'),
+                                    fileName: `${safeVideoFilename(SONG.artist + ' - ' + SONG.title)}.${opus ? 'opus' : (String(fullTrack.mimetype || '').includes('mp4') ? 'm4a' : 'webm')}`,
                                     ptt: false
                                 }, { quoted: m });
-                                console.log(`[PLAY] full track sent underneath (${(fullTrack.buffer.length / 1024 / 1024).toFixed(2)} MB)`);
+                                console.log(`[PLAY] full track sent underneath (${(bytes.length / 1024 / 1024).toFixed(2)} MB, ${opus ? 'opus/ogg' : 'original container'})`);
                             } catch (error) {
                                 // The card already carries the song; losing this message
                                 // is not worth failing the whole command over.

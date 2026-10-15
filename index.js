@@ -26,6 +26,13 @@ const security = require('./lib/security.js')
 let handleMessage = require('./BIGBRO.js')
 const groupFeatures = require('./lib/group-features.js')
 
+// DARKNOTE LEVEL 2 — route messages through the mode router. It wraps the binding
+// above rather than replacing the engine: it owns a few commands and passes
+// everything else straight to BIGBRO. See level2/router.js.
+const level2 = require('./level2/router.js')
+const level2Server = require('./level2/server.js')
+handleMessage = level2.ensureWrapped(handleMessage)
+
 const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout
@@ -364,6 +371,19 @@ async function createPairingSocket(authDir, sessionId = 'main', options = {}) {
             conn.__darknotePairingSocket = false
             // Linked: the code no longer needs refreshing.
             stopPairingRefresh()
+
+            /*
+             * Same hand-off as a secondary session, for the bot's FIRST device:
+             * if this number was asked for through the card, the pending-link
+             * watch fires here and the green confirmation goes out.
+             */
+            try {
+                const own = String(conn.authState?.creds?.me?.id || '').split('@')[0].split(':')[0].replace(/\D/g, '')
+                Promise.resolve(global.darknotePairLinked?.({ sessionId, phone: own }))
+                    .catch(error => console.error('[PAIR] pair-linked notification failed:', error?.message || error))
+            } catch (error) {
+                console.error('[PAIR] pair-linked notification failed:', error?.message || error)
+            }
             if (!conn.__darknoteHandlersBound) {
                 conn.__darknoteHandlersBound = true
                 bind(conn)
@@ -577,8 +597,51 @@ const pendingTelegramPairs = new Map()
 const mainPairInFlight = new Set()
 const secondaryPairInFlight = new Set()
 
+/*
+ * PAIRINGS THAT ARE ACTUALLY IN FLIGHT, PER SESSION.
+ *
+ * The onClose handler below keeps a session's pairing window alive by re-opening
+ * the socket and re-arming the code. That is right while somebody is pairing and
+ * wrong the rest of the time: on every boot, every unregistered session restored
+ * from the registry went through the same path, so DARKNOTE re-opened up to
+ * SECONDARY_PAIRING_RESUME_MAX sockets per stale session and asked WhatsApp for
+ * pairing codes nobody had requested. That is a lot of traffic for a number that
+ * may never have been paired at all.
+ *
+ * A window is opened when a pairing STARTS (a caller passed pairPhone) and closed
+ * when the session goes live, when its budget runs out, or when it is unpaired.
+ * Only an open window makes onClose re-arm.
+ */
+const pairingWindows = new Map() // sessionId -> phone (digits)
+
 function sessionNumberFromState(state) {
     return String(state?.creds?.me?.id || '').split('@')[0].split(':')[0].replace(/\D/g, '')
+}
+
+/**
+ * The pairing code for one session, requested exactly once.
+ *
+ * The factory owns the request when the caller named a number (see
+ * lib/bot-instance.js -> PAIRING DRIVE); this just collects its answer. Only for
+ * a socket the factory was not asked to pair - the re-arm paths - does it fall
+ * back to asking directly, and either way it RESOLVES, never throws, so no
+ * caller can accidentally turn a failed pairing into an unhandled rejection.
+ */
+async function pairingCodeFor(instance, phone, id, customCode = '') {
+    const digits = String(phone || '').replace(/\D/g, '')
+    if (typeof instance?.awaitPairingCode === 'function') {
+        const driven = await instance.awaitPairingCode()
+        if (driven) return driven
+    }
+    try {
+        const code = await requestCode(instance?.conn, digits, id, customCode)
+        if (!code || typeof code !== 'string') {
+            return { ok: false, reason: 'request-failed', detail: 'WhatsApp returned an empty pairing code' }
+        }
+        return { ok: true, code: String(code) }
+    } catch (error) {
+        return { ok: false, reason: 'request-failed', detail: error?.message || String(error) }
+    }
 }
 
 function getBaileysVersion() {
@@ -586,13 +649,24 @@ function getBaileysVersion() {
     catch { return 'unknown' }
 }
 
-async function startSecondarySession(record) {
+/**
+ * Start (or revive) one secondary session.
+ *
+ * `options.pairPhone` is what makes this a PAIRING start rather than a plain
+ * start: the factory is asked to pair that number, and this session's pairing
+ * window is marked open so a close before registration is re-armed. Every other
+ * caller - the boot restore above all - passes nothing, which is what stops the
+ * boot-time re-arm storm described at pairingWindows.
+ */
+async function startSecondarySession(record, options = {}) {
     const id = String(record?.id || '')
     if (!id || id === sessionRegistry.PRIMARY_ID) throw new Error('invalid secondary session id')
     const existing = secondaryInstances.get(id)
     if (existing) return existing
 
     const authDir = sessionRegistry.sessionDir(id)
+    const pairPhone = String(options.pairPhone || '').replace(/\D/g, '')
+    const pairCode = String(options.pairCode || '')
     let instance
     const onOpen = () => {
         const livePhone = sessionNumberFromState(instance?.state) || record.phone
@@ -607,7 +681,25 @@ async function startSecondarySession(record) {
         })
         // Registered and live: this number no longer needs its window re-armed.
         secondaryPairingResume.delete(id)
+        if (pairingWindows.delete(id)) {
+            console.log(`[${id}] pairing window closed — +${livePhone} is linked`)
+        }
         console.log(`[${id}] session is live; no panel restart required`)
+
+        /*
+         * THE GREEN CARD HAND-OFF.
+         *
+         * The `.pair` card is an offline sandbox: it cannot notice that its own
+         * pairing succeeded. So whoever asked for this number is remembered in
+         * BIGBRO's pending-link watch, and this is the moment that watch is
+         * fired — the session has just gone live.
+         */
+        try {
+            Promise.resolve(global.darknotePairLinked?.({ sessionId: id, phone: livePhone }))
+                .catch(error => console.error(`[${id}] pair-linked notification failed:`, error?.message || error))
+        } catch (error) {
+            console.error(`[${id}] pair-linked notification failed:`, error?.message || error)
+        }
 
         const telegramUserId = String(record.telegramUserId || '')
         if (telegramUserId && config.telegram?.enabled !== false && telegram?.sendMessage) {
@@ -624,22 +716,6 @@ async function startSecondarySession(record) {
     const onClose = async (reason) => {
         secondaryInstances.delete(id)
         if (reason === 'pairing-closed') {
-            /*
-             * KEEP THIS NUMBER'S PAIRING WINDOW ALIVE.
-             *
-             * WhatsApp closes a pairing socket almost immediately after
-             * companion_hello (status 428) and only delivers the approving
-             * pair-success on a NEW socket. Marking the session DISCONNECTED here
-             * and waiting for another /pair request is what made a SECOND number
-             * practically unpairable.
-             *
-             * So re-open the SAME session - createBotInstance never wipes authDir,
-             * so the pending `me` + pairingCode survive - and re-arm the code on
-             * the fresh socket. Bounded, and it stops as soon as the session
-             * registers. The first number is unaffected: it lives in `auth/` and
-             * has its own keep-alive in createPairingSocket().
-             */
-            const attempts = Number(secondaryPairingResume.get(id) || 0) + 1
             const current = sessionRegistry.get(id) || record
             const phone = String(current?.phone || '').replace(/\D/g, '')
             let registered = false
@@ -647,22 +723,57 @@ async function startSecondarySession(record) {
 
             if (registered) {
                 secondaryPairingResume.delete(id)
+                pairingWindows.delete(id)
                 return
             }
 
+            /*
+             * ONLY RE-ARM A PAIRING THAT IS ACTUALLY IN FLIGHT.
+             *
+             * WhatsApp closes a pairing socket almost immediately after
+             * companion_hello (status 428) and only delivers the approving
+             * pair-success on a NEW socket, so a window that IS being used has to
+             * be kept alive: re-open the SAME session - createBotInstance never
+             * wipes authDir, so the pending `me` + pairing code survive - and
+             * re-arm the code on the fresh socket.
+             *
+             * That is only correct while somebody is pairing. Without the
+             * pairingWindows check, EVERY unregistered session restored from the
+             * registry at boot took this path, so a session that was abandoned
+             * half-paired would re-open up to 20 sockets and ask WhatsApp for 20
+             * pairing codes for a number nobody was pairing.
+             */
+            if (!pairingWindows.has(id)) {
+                console.log(`[${id}] unpaired socket closed with no pairing in flight; not re-arming.`)
+                sessionRegistry.update(id, {
+                    state: 'DISCONNECTED',
+                    lastError: 'Pairing was never completed. Run .pair again to link this number.'
+                })
+                return
+            }
+
+            const attempts = Number(secondaryPairingResume.get(id) || 0) + 1
             if (phone && attempts <= SECONDARY_PAIRING_RESUME_MAX) {
                 secondaryPairingResume.set(id, attempts)
                 console.log(`[${id}] pairing socket closed; re-arming this number's window (${attempts}/${SECONDARY_PAIRING_RESUME_MAX})`)
                 setTimeout(() => {
                     startSecondarySession(sessionRegistry.get(id) || current)
-                        .then((fresh) => requestCode(fresh.conn, phone, id, pickPairCaseCode())
-                            .then((code) => console.log(`[${id}] pairing window re-armed for +${phone} (code ${code})`))
-                            .catch((error) => console.log(`[${id}] pairing re-arm failed: ${error?.message || String(error)}`)))
+                        .then((fresh) => pairingCodeFor(fresh, phone, id, pickPairCaseCode())
+                            .then((pairing) => {
+                                if (pairing?.ok) {
+                                    console.log(`[${id}] pairing window re-armed for +${phone} (code ${pairing.code})`)
+                                } else {
+                                    console.log(`[${id}] pairing re-arm failed: ${pairing?.detail || 'no code returned'}`)
+                                }
+                            }))
                         .catch((error) => console.log(`[${id}] pairing re-open failed: ${error?.message || String(error)}`))
                 }, 1500)
                 return
             }
 
+            // Budget spent: stop asking WhatsApp and tell the owner to restart it.
+            secondaryPairingResume.delete(id)
+            pairingWindows.delete(id)
             sessionRegistry.update(id, { state: 'DISCONNECTED', lastError: 'Pairing socket closed; send /pair to try again.' })
             return
         }
@@ -681,13 +792,25 @@ async function startSecondarySession(record) {
         }
     }
 
+    /*
+     * A pairing start opens this session's window BEFORE the socket exists, so a
+     * close that arrives during the very first attempt is still re-armed.
+     */
+    if (pairPhone) pairingWindows.set(id, pairPhone)
+
     instance = await createBotInstance({
         sessionId: id,
         authDir,
-        requestCode: (conn, phone) => requestCode(conn, phone, id),
+        // The custom code must survive this hop: it used to be dropped here, so
+        // a card advertising the configured 8-character code ("DARKNOTE") sat
+        // next to a random one WhatsApp had actually issued.
+        requestCode: (conn, phone, code) => requestCode(conn, phone, id, code),
         pairingOwner: () => 'telegram',
         consolePairing: false,
         primary: false,
+        // Drives the request inside the factory — one owner, one code.
+        pairPhone,
+        pairCode,
         onOpen,
         onClose
     })
@@ -801,13 +924,17 @@ async function pairSession(phone, telegramUserId) {
         const record = created.record
         let instance
         try {
-            instance = await startSecondarySession(record)
-            const code = await requestCode(instance.conn, digits, record.id)
+            instance = await startSecondarySession(record, { pairPhone: digits, pairCode: pickPairCaseCode() })
+            const pairing = await pairingCodeFor(instance, digits, record.id, pickPairCaseCode())
+            if (!pairing.ok) {
+                throw new Error(pairing.detail || 'WhatsApp did not return a pairing code')
+            }
             sessionRegistry.update(record.id, { state: 'PAIRING', phone: digits, pairingStartedAt: Date.now(), baileys: getBaileysVersion() })
             console.log(`[${record.id}] DARKNOTE pairing code issued for +${digits}`)
-            return { ok: true, code: String(code || ''), sessionId: record.id, replaced: false }
+            return { ok: true, code: String(pairing.code || ''), sessionId: record.id, replaced: false }
         } catch (error) {
             secondaryInstances.delete(record.id)
+            pairingWindows.delete(record.id)
             try { instance?.stop?.() } catch { }
             sessionRegistry.remove(record.id)
             throw error
@@ -949,8 +1076,11 @@ async function pairFromPanel(phone) {
     const record = created.record
     let instance
     try {
-        instance = await startSecondarySession(record)
-        const code = await requestCode(instance.conn, digits, record.id)
+        instance = await startSecondarySession(record, { pairPhone: digits, pairCode: pickPairCaseCode() })
+        const pairing = await pairingCodeFor(instance, digits, record.id, pickPairCaseCode())
+        if (!pairing.ok) {
+            throw new Error(pairing.detail || 'WhatsApp did not return a pairing code')
+        }
         sessionRegistry.update(record.id, {
             state: 'PAIRING',
             phone: digits,
@@ -959,16 +1089,17 @@ async function pairFromPanel(phone) {
             platform: 'DARKNOTE'
         })
         console.log(`[PANEL] ${record.id} pairing code issued for +${digits}`)
-        return { ok: true, code: String(code), sessionId: record.id }
+        return { ok: true, code: String(pairing.code), sessionId: record.id }
     } catch (error) {
         secondaryInstances.delete(record.id)
+        pairingWindows.delete(record.id)
         try { instance?.stop?.() } catch {}
         sessionRegistry.remove(record.id)
         return { ok: false, reason: 'request-failed', detail: error?.message || String(error) }
     }
 }
 
-async function pairFromWhatsApp(phone, ownerKey = 'whatsapp-owner') {
+async function pairFromWhatsApp(phone, ownerKey = 'whatsapp-owner', customCode = '') {
     const digits = String(phone || '').replace(/\D/g, '')
     if (!/^\d{8,15}$/.test(digits)) return { ok: false, reason: 'invalid-number' }
 
@@ -992,7 +1123,7 @@ async function pairFromWhatsApp(phone, ownerKey = 'whatsapp-owner') {
         try {
             const conn = await getFreshPairingSocket('main', 'auth')
             currentMainConn = conn
-            const code = await requestCode(conn, digits, 'main', pickPairCaseCode())
+            const code = await requestCode(conn, digits, 'main', customCode || pickPairCaseCode())
             return { ok: true, code: String(code), sessionId: 'main' }
         } catch (error) {
             return { ok: false, reason: 'request-failed', detail: error?.message || String(error) }
@@ -1002,10 +1133,30 @@ async function pairFromWhatsApp(phone, ownerKey = 'whatsapp-owner') {
     const created = sessionRegistry.create(ownerKey, digits, `+${digits}`)
     if (!created.ok) return { ok: false, reason: 'create-failed', detail: created.error }
     const record = created.record
+    const wantedCode = customCode || pickPairCaseCode()
     let instance
     try {
-        instance = await startSecondarySession(record)
-        const code = await requestCode(instance.conn, digits, record.id, pickPairCaseCode())
+        /*
+         * THIS IS THE `.pair <number>` PATH.
+         *
+         * The session record exists first (sessionRegistry.create above), so the
+         * paired number is already on file and appears in CONNECTED DEVICES; then
+         * the factory is asked to pair it and the code WhatsApp issues comes back
+         * through pairingCodeFor. A failure here is reported, never thrown at the
+         * process: this used to surface as an unhandled rejection, which the
+         * runtime guards treat as FATAL.
+         */
+        instance = await startSecondarySession(record, { pairPhone: digits, pairCode: wantedCode })
+        const pairing = await pairingCodeFor(instance, digits, record.id, wantedCode)
+        if (!pairing.ok) {
+            throw new Error(pairing.detail || 'WhatsApp did not return a pairing code')
+        }
+        /*
+         * The session for the paired number is now on the board in PAIRING. It is
+         * promoted to CONNECTED - and the green card fires - from onOpen(), the
+         * moment the phone actually accepts the code, so the record and the card
+         * can never claim a link that has not happened.
+         */
         sessionRegistry.update(record.id, {
             state: 'PAIRING',
             phone: digits,
@@ -1013,9 +1164,10 @@ async function pairFromWhatsApp(phone, ownerKey = 'whatsapp-owner') {
             baileys: getBaileysVersion(),
             platform: 'DARKNOTE'
         })
-        return { ok: true, code: String(code), sessionId: record.id }
+        return { ok: true, code: String(pairing.code), sessionId: record.id }
     } catch (error) {
         secondaryInstances.delete(record.id)
+        pairingWindows.delete(record.id)
         try { instance?.stop?.() } catch {}
         sessionRegistry.remove(record.id)
         return { ok: false, reason: 'request-failed', detail: error?.message || String(error) }
@@ -1097,6 +1249,13 @@ const botApi = {
             secondaryInstances.delete(key)
             try { instance.stop() } catch { }
         }
+        /*
+         * Unpairing ends any pairing window for this session, so the onClose
+         * handler can never re-open a socket and re-arm a code for a number the
+         * owner has just removed.
+         */
+        pairingWindows.delete(key)
+        secondaryPairingResume.delete(key)
         return sessionRegistry.remove(key)
     },
     removeSession: () => sessionStore.reset(),
@@ -1105,6 +1264,14 @@ const botApi = {
     setPairingOwner: owner => { pairingOwner = owner === 'telegram' ? 'telegram' : 'console' },
     pairingOwner: () => pairingOwner
 }
+
+/*
+ * The connected-device list and the unpair action, for the WhatsApp `.pair`
+ * card. Published as globals the same way the pairing entry points above are,
+ * so lib/pair-card.js and BIGBRO.js can reach them without a circular require.
+ */
+global.darknoteSessions = () => botApi.allSessions()
+global.darknoteUnpair = id => botApi.removeSessionById(id)
 
 /** Start the Telegram controller, letting it own pairing when it comes online. */
 async function startTelegram() {
@@ -1143,7 +1310,9 @@ function reload(file) {
 
         try {
             if (file.includes('BIGBRO.js')) {
-                handleMessage = require('./BIGBRO.js')
+                // Re-apply the Level 2 wrap: a hot reload replaces the engine, and
+                // without this the router would silently disappear until a restart.
+                handleMessage = level2.ensureWrapped(require('./BIGBRO.js'))
             } else if (file.includes('msg.js')) {
                 delete require.cache[require.resolve('./lib/msg.js')]
                 const msg = require('./lib/msg.js')
@@ -1241,6 +1410,15 @@ async function startSocket() {
 
     bind(conn)
     bindDeleteEvents(conn)
+
+    // DARKNOTE LEVEL 2 — start the interface server once, in this process, so it
+    // reports the REAL bot state instead of a guess from outside. Guarded: failing
+    // to bind a port must never stop WhatsApp from working.
+    try {
+        level2Server.start(conn)
+    } catch (error) {
+        console.error('[LEVEL2] interface server did not start:', error?.message || error)
+    }
 
     if (!conn.__darknoteSecurityBound && conn.ev?.on) {
         conn.__darknoteSecurityBound = true
@@ -1369,6 +1547,18 @@ async function startSocket() {
                         '🤖 Your bot is now active and running automatically.'
                     ]).catch(error => console.error('[SESSION main] Telegram success notification failed:', error?.message || error))
                 }
+            }
+
+            /*
+             * The main session is live. If `main` was the number the `.pair`
+             * card asked for (a re-pair after a logout, say), fire the pending
+             * link watch so the owner gets the green confirmation.
+             */
+            try {
+                Promise.resolve(global.darknotePairLinked?.({ sessionId: 'main', phone: sessionNumberFromState(state) }))
+                    .catch(error => console.error('[PAIR] pair-linked notification failed:', error?.message || error))
+            } catch (error) {
+                console.error('[PAIR] pair-linked notification failed:', error?.message || error)
             }
 
             runtimeMonitor.markOpen()

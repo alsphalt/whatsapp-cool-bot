@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0a0a0c">
+<title>DARKNOTE LEVEL 2</title>
+<link rel="stylesheet" href="./styles.css">
+<link rel="stylesheet" href="./games/games.css">
+</head>
+<body>
+<!--
+  THE PHONE.
+  One shell, one screen element, and a stack of views inside it. Apps never replace
+  the page: they are pushed into #view-host, which is what makes Back a real
+  navigation step instead of a journey back to the home screen.
+
+  Nothing here decides whether you may enter: the lock screen asks the server, and
+  without the server's answer the phone stays shut.
+-->
+<div class="stage">
+    <div class="phone" id="phone">
+        <div class="phone-body">
+            <div class="phone-screen" id="screen">
+                <div class="camera-hole" aria-hidden="true"></div>
+
+                <header class="statusbar" id="statusbar">
+                    <div class="sb-left">
+                        <span id="sb-clock">--:--</span>
+                    </div>
+                    <div class="sb-right">
+                        <span class="sb-icon" id="sb-signal" title="Network">▮▮▮▮</span>
+                        <span class="sb-icon" id="sb-battery-icon">▰</span>
+                        <span id="sb-battery-text">--%</span>
+                    </div>
+                </header>
+
+                <!-- ---------------- lock screen ---------------- -->
+                <section class="screen-layer is-visible" id="lock">
+                    <div class="lock-logo">DARKNOTE</div>
+                    <div class="lock-sub">LEVEL 2</div>
+                    <div class="lock-clock" id="lock-clock">--:--</div>
+                    <div class="lock-date" id="lock-date"></div>
+
+                    <div class="pin-display" id="pin-display" aria-label="passcode">
+                        <i></i><i></i><i></i><i></i><i></i><i></i>
+                    </div>
+
+                    <div class="lock-message" id="lock-message">Enter the passcode to open the phone.</div>
+
+                    <div class="keypad" id="keypad">
+                        <!-- filled by app.js so the layout cannot drift from the logic -->
+                    </div>
+
+                    <div class="lock-server" id="lock-server">checking the server…</div>
+                </section>
+
+                <!-- ---------------- home screen ---------------- -->
+                <section class="screen-layer" id="home">
+                    <div class="home-status" id="home-status">
+                        <span class="chip" id="chip-mode">mode: …</span>
+                        <span class="chip" id="chip-bot">bot: …</span>
+                    </div>
+
+                    <div class="app-grid" id="app-grid">
+                        <!-- app tiles are built from the registry, so a new app needs no
+                             edits here, in the CSS, or in the navigation code -->
+                    </div>
+
+                    <div class="home-foot" id="home-foot">DARKNOTE LEVEL 2 · foundation build</div>
+                </section>
+
+                <!-- ---------------- app host ---------------- -->
+                <section class="screen-layer app-layer" id="app-host">
+                    <div class="app-bar">
+                        <button class="app-back" id="app-back" type="button" aria-label="Back">‹</button>
+                        <div class="app-title" id="app-title">App</div>
+                        <button class="app-home" id="app-home" type="button" aria-label="Home">⌂</button>
+                    </div>
+                    <div class="app-body" id="app-body"></div>
+                </section>
+
+                <!-- ---------------- navigation bar ---------------- -->
+                <nav class="navbar" id="navbar" hidden>
+                    <button type="button" data-nav="back">◁ Back</button>
+                    <button type="button" data-nav="home">◯ Home</button>
+                    <button type="button" data-nav="apps">▢ Apps</button>
+                </nav>
+
+                <div class="homebar" aria-hidden="true"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="./apps/registry.js"></script>
+<script src="./apps/settings.js"></script>
+<script src="./apps/swap.js"></script>
+<script src="./apps/games.js"></script>
+<!-- Games register themselves with the console; a new game is a new file here. -->
+<script src="./games/tictactoe.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>

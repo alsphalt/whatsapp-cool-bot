@@ -16,25 +16,27 @@ const { spawn } = require('child_process')
 const sharp = require('sharp')
 
 /* Must match the constants in BIGBRO.js's .play case. */
+const EMBED_QUALITY_BPS = 32000
 const CARD_BUDGET_KB = 240
 const CARD_OVERHEAD_KB = 62
 const MIN_AUDIO_BPS = 2800
 const MAX_AUDIO_BPS = 96000
 const CBR_OVERSHOOT = 1.12
 const CARD_CEILING_KB = 256
-/* Measured non-audio cost of the card: ~18 KB markup + ~10 KB thumbnail. */
+/* Measured non-audio cost of the card: ~18 KB markup + ~10 KB inlined thumbnail. */
 const CARD_FIXED_KB = 30
 
+/* Audio bytes the card can carry once base64 inflates them by 4/3. */
+const audioBinaryBytes = () => Math.floor(
+    Math.max(8 * 1024, (CARD_BUDGET_KB - CARD_OVERHEAD_KB) * 1024) * 3 / 4)
+
 const bitrateForDuration = (seconds) => {
-    const audioB64Bytes = Math.max(8 * 1024, (CARD_BUDGET_KB - CARD_OVERHEAD_KB) * 1024)
-    const binaryBytes = Math.floor(audioB64Bytes * 3 / 4)
-    const bps = Math.floor((binaryBytes * 8) / (Math.max(1, seconds) * CBR_OVERSHOOT))
+    const bps = Math.floor((audioBinaryBytes() * 8) / (Math.max(1, seconds) * CBR_OVERSHOOT))
     return Math.min(MAX_AUDIO_BPS, Math.max(MIN_AUDIO_BPS, bps))
 }
 
-const maxSongSeconds = () => Math.floor(
-    (((CARD_CEILING_KB - CARD_FIXED_KB) * 1024) * 3 / 4)
-    / (MIN_AUDIO_BPS * CBR_OVERSHOOT / 8))
+const secondsAtBitrate = (bps) => Math.floor(
+    (audioBinaryBytes() * 8) / (Math.max(1, bps) * CBR_OVERSHOOT))
 
 const ffmpegBin = () => require('ffmpeg-static')
 
@@ -88,23 +90,34 @@ const LENGTHS = arg ? [Number(arg)] : [240, 300, 348, 420, 442]
         ? `background-image:url('${thumbData}');background-size:cover;background-position:center;`
         : 'background:linear-gradient(135deg,#1db954,#0b3d20 55%,#05050a);'
 
-    console.log('\none card holds up to ' + maxSongSeconds() + 's at the ' +
-        Math.round(MIN_AUDIO_BPS / 1000) + ' kbps floor')
-    console.log('\n   dur    reqbps  oggKB  achkbps  cardKB  verdict')
-    console.log('   ' + '-'.repeat(52))
+    /* A song only fits whole while bitrateForDuration() is at or above the floor. */
+    const wholeSongLimit = () => {
+        let seconds = 1
+        while (seconds < 4000 && bitrateForDuration(seconds + 1) >= EMBED_QUALITY_BPS) seconds++
+        return seconds
+    }
+
+    console.log('\nthe card holds ' + secondsAtBitrate(EMBED_QUALITY_BPS) + 's at the ' +
+        Math.round(EMBED_QUALITY_BPS / 1000) + ' kbps clarity floor, and carries a song whole')
+    console.log('up to ' + wholeSongLimit() + 's at that rate or better')
+    console.log('\n   song   embed  reqbps  oggKB  achkbps  cardKB  verdict')
+    console.log('   ' + '-'.repeat(58))
     for (const seconds of LENGTHS) {
-        const bps = bitrateForDuration(seconds)
-        const enc = await encodeLength(seconds, bps)
+        /* Mirrors .play: hold the floor, then take however many seconds fit there. */
+        const bps = Math.max(EMBED_QUALITY_BPS, bitrateForDuration(seconds))
+        const cardSeconds = Math.min(seconds, secondsAtBitrate(bps))
+        const enc = await encodeLength(cardSeconds, bps)
         const b64 = enc.toString('base64')
+        const label = cardSeconds >= seconds ? 'Full song · in-card' : 'First ' + cardSeconds + 's · in-card'
         const html = new Function('SONG', 'safe', 'heroStyle', 'badgeLabel', 'hasTimedLyrics',
             'lyricsJson', 'encodedBase64', 'totalSeconds', 'sourceLabel',
             'return `' + tpl + '`')(
-            SONG, safe, heroStyle, '?', false, '[]', b64, seconds, 'Full song · in-card')
+            SONG, safe, heroStyle, '?', false, '[]', b64, cardSeconds, label)
         const cardKB = Buffer.byteLength(html) / 1024
-        const kbps = (enc.length * 8 / seconds / 1000).toFixed(2)
-        console.log('   ' + String(seconds).padEnd(6) + String(bps).padEnd(8) +
-            String((enc.length / 1024).toFixed(0)).padEnd(7) + String(kbps).padEnd(9) +
-            cardKB.toFixed(0).padEnd(8) +
+        const kbps = (enc.length * 8 / cardSeconds / 1000).toFixed(2)
+        console.log('   ' + String(seconds).padEnd(7) + String(cardSeconds).padEnd(7) +
+            String(bps).padEnd(8) + String((enc.length / 1024).toFixed(0)).padEnd(7) +
+            String(kbps).padEnd(9) + cardKB.toFixed(0).padEnd(8) +
             (cardKB < CARD_CEILING_KB ? 'FITS' : 'OVER by ' + (cardKB - CARD_CEILING_KB).toFixed(0) + ' KB'))
     }
 })().catch(e => { console.error('FAILED:', e.message); process.exit(1) })

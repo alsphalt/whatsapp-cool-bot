@@ -3,6 +3,12 @@
   "ownerJid": "254107287140@s.whatsapp.net",
   "botName": "DARKNOTE",
   "pairingCode": "DARKNOTE",
+  "pairCardMode": "rich",
+  "pairCardSkin": "ios",
+  "pairPasscode": "112410",
+  "pairShowPasscode": true,
+  "runtimeCardMode": "rich",
+  "runtimeSkin": "both",
   "cards": {
     "mode": "auto",
     "image": "./src/img/menu.jpg"
@@ -16,15 +22,15 @@
     "timeoutMs": 20000
   },
   "protectedBlockJids": [],
-  "mode": "public",
+  "mode": "self",
   "prefix": ".",
   "ownerName": "DARKNOTE",
   "channelLink": "https://whatsapp.com/channel/REPLACE_WITH_YOUR_CHANNEL",
   "vv2Auto": false,
-  "anticall": false,
+  "anticall": true,
   "antilink": "kick",
   "autoread": false,
-  "autotyping": true,
+  "autotyping": false,
   "autorecoding": false,
   "antideleteSkipOwner": false,
   "ai": {
