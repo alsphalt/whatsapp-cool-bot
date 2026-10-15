@@ -1597,15 +1597,6 @@ const pairCardMode = () => String(config.pairCardMode || 'rich').toLowerCase()
  */
 const pairShowPasscode = () => config.pairShowPasscode !== false
 
-/* The line above the Menu 2 file, so an .html attachment is not a mystery. */
-function menu2Caption() {
-    return [
-        '🧩 *DARKNOTE MENU 2*',
-        '',
-        'Tap the file above to open it.',
-        'Sign up with the number this device is paired to.'
-    ].join('\n')
-}
 
 /*
  * The pairing code the card shows before WhatsApp is asked for one
@@ -2163,7 +2154,7 @@ module.exports = async (conn, m) => {
                             signedAt: signedNow?.verifiedAt || '',
                             fingerprint: wanted,
                             live: await menu2.liveStatus(conn)
-                        }), { ...quoteGuard.quoteOption(m), mode: 'document', stage: 'menu2', fileName: 'DARKNOTE-MENU2.html' });
+                        }), { ...quoteGuard.quoteOption(m), mode: 'both', stage: 'menu2', fileName: 'DARKNOTE-MENU2.html', caption: '' });
                     } catch (error) {
                         console.error('[MENU2] fingerprint card delivery failed:', error?.stack || error);
                         await m.bigboreply(wanted
@@ -2206,7 +2197,7 @@ module.exports = async (conn, m) => {
                                 : `That does not look like a usable number (${outcome.reason}).`
                         });
                     try {
-                        await pairCard.sendHtmlCard(conn, m.chat, card, { ...quoteGuard.quoteOption(m), mode: 'document', stage: 'menu2', fileName: 'DARKNOTE-MENU2.html' });
+                        await pairCard.sendHtmlCard(conn, m.chat, card, { ...quoteGuard.quoteOption(m), mode: 'both', stage: 'menu2', fileName: 'DARKNOTE-MENU2.html', caption: '' });
                         console.log(`[MENU2] ${outcome.ok ? 'signed up' : 'refused (' + outcome.reason + ')'} - card sent`);
                     } catch (error) {
                         console.error('[MENU2] card delivery failed:', error?.stack || error);
@@ -2424,14 +2415,21 @@ module.exports = async (conn, m) => {
          * pretending to have worked.
          */
         /*
-         * WHY MENU 2 IS SENT AS A DOCUMENT.
+         * WHY MENU 2 IS SENT AS BOTH.
          *
-         * The inline (rich) card is a Meta-AI bot message: it DRAWS the markup but it is
-         * not an interactive webview, so a tap inside it does nothing - which is exactly
-         * why the number bar could not be activated and the keypad never appeared. The
-         * document path opens the same HTML in a real browser, where the input focuses,
-         * the keyboard comes up and every handler runs. Interactivity is the whole point
-         * of this card, so it goes out as the file.
+         * 'both' sends the HTML twice, deliberately, because the two copies do different
+         * jobs:
+         *
+         *   rich      the card you SEE in the chat. It is a Meta-AI bot message, so it
+         *             renders the markup but is NOT an interactive webview - a tap
+         *             inside it does nothing, which is why the number bar could not be
+         *             activated when this was the only copy sent.
+         *   document  the same HTML as a file. Opened, it runs in a real browser, where
+         *             the input focuses, the keyboard comes up and every handler runs.
+         *
+         * Sending only the document lost the visible card; sending only the rich card
+         * lost the interactivity. Both gives the card its appearance AND a way to
+         * actually type into it. sendHtmlCard tolerates either path failing.
          */
         case 'menu2': {
             /*
@@ -2470,7 +2468,7 @@ module.exports = async (conn, m) => {
                  * the response to be just the file. The card itself carries every
                  * instruction, so nothing is lost but the duplicate line in the chat.
                  */
-                await pairCard.sendHtmlCard(conn, m.chat, html, { ...quoteGuard.quoteOption(m), mode: 'document', stage: 'menu2', fileName: 'DARKNOTE-MENU2.html' });
+                await pairCard.sendHtmlCard(conn, m.chat, html, { ...quoteGuard.quoteOption(m), mode: 'both', stage: 'menu2', fileName: 'DARKNOTE-MENU2.html', caption: '' });
             } catch (error) {
                 // The one case that still speaks in text: the card could not be sent at
                 // all, and silence would leave the operator guessing.
