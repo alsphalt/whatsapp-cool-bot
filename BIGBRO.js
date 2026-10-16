@@ -351,7 +351,13 @@ async function sendLegacyMenu(conn, m, text, buttons) {
             if (thumb) card.setRawThumbnail(Buffer.from(thumb).toString('base64'))
 
             for (const button of buttons || []) {
-                card.addButton(String(button.text), String(button.id))
+                /*
+                 * The id travels as an OBJECT field. addButton() JSON-stringifies its params, so
+                 * handing it a bare string produced paramsJson '"clearance_confirm"' - a JSON
+                 * string, carrying no .id for the reply parser to read. That is why a tap on the
+                 * clearance button reached the bot and then died as an empty command.
+                 */
+                card.addButton(String(button.text), { display_text: String(button.text), id: String(button.id) })
             }
 
             const context = quotedContext(m)
@@ -393,6 +399,49 @@ async function sendLegacyMenu(conn, m, text, buttons) {
         await conn.sendMessage(m.chat, { text }, { quoted: m })
         return { ok: true, mode: 'text' }
     }
+}
+
+/*
+ * PROGRESS REPORTING — one message, edited in place.
+ *
+ * Used by the multi-step owner commands (.outallgrup, .joinallgrup). A leave-all over
+ * 40 groups would otherwise bury the chat in 80 separate bubbles, so a single message
+ * is sent and then edited as each step completes.
+ *
+ * Edits are best-effort: WhatsApp occasionally rejects an edit, and losing a progress
+ * line must never abort the run it is reporting on. Failures are logged and swallowed.
+ */
+
+/** Appends the shared card footer, unless the text already carries one. */
+function withBigbrotherFooter(text) {
+    const body = String(text ?? '').replace(/\s+$/, '');
+    const footer = 'DARKNOTE L2 • Bigbrother';
+    return body.includes(footer) ? body : `${body}\n\n${footer}`;
+}
+
+/**
+ * Builds an editable status message.
+ * `send` must RETURN the sent message (bigboreply does) so its key can be edited.
+ */
+function createProgress({ conn, chat, send, editFormat }) {
+    const format = typeof editFormat === 'function' ? editFormat : (text => String(text ?? ''));
+    let sent = null;
+
+    const write = async text => {
+        const body = format(text);
+        if (!sent?.key) {
+            sent = await send(body);
+            return sent;
+        }
+        try {
+            await conn.sendMessage(chat, { text: body, edit: sent.key });
+        } catch (error) {
+            console.error('[PROGRESS] edit failed:', error?.message || error);
+        }
+        return sent;
+    };
+
+    return { write, finish: write };
 }
 
 async function sendMenuCard(conn, m, text, buttons) {
@@ -778,6 +827,20 @@ const normalizeJidForCompare = (jid = '') => {
     }
 };
 
+/*
+ * Participant identity on LID-migrated groups.
+ *
+ * This fork returns group members whose `id` is a LID ("123456@lid") while an
+ * incoming message carries the sender as a phone JID
+ * ("254705472771@s.whatsapp.net"). Testing only id/jid/lid therefore found
+ * NOTHING for a genuine admin, so every admin-gated command answered "Only
+ * group admins can use ..." to the actual admin - the lookup failed, not the
+ * permission. `phoneNumber` is where that member's phone JID lives in this
+ * shape. lib/protected-antilink.js matches this way for the same reason; this
+ * keeps every isGroupAdmin caller consistent with it.
+ */
+const PARTICIPANT_ID_FIELDS = ['id', 'jid', 'lid', 'phoneNumber', 'pn', 'userJid'];
+
 const isGroupAdmin = (metadata, senderJid) => {
     if (!metadata?.participants?.length || !senderJid) return false;
 
@@ -786,7 +849,8 @@ const isGroupAdmin = (metadata, senderJid) => {
     const senderNumber = getNumber(sender);
 
     const participant = metadata.participants.find(p => {
-        const ids = [p?.id, p?.jid, p?.lid]
+        const ids = PARTICIPANT_ID_FIELDS
+            .map(field => p?.[field])
             .filter(Boolean)
             .map(value => String(value).trim());
 
@@ -794,7 +858,9 @@ const isGroupAdmin = (metadata, senderJid) => {
             if (normalizeJidForCompare(id) === senderNormalized) return true;
 
             // Handles WhatsApp LID -> normal JID mappings when the message
-            // sender and group participant use different identifiers.
+            // sender and group participant use different identifiers. Only a
+            // real phone JID is compared by number: a LID's digits are not a
+            // phone number, so matching those by number would be a false hit.
             if (senderNumber && id.endsWith('@s.whatsapp.net')) {
                 return getNumber(id) === senderNumber;
             }
@@ -1108,7 +1174,16 @@ const extractCommandFromMessage = (m) => {
                     if (flow.paramsJson) {
                         try {
                             const params = JSON.parse(flow.paramsJson);
-                            body = params.id || params.buttonId || params.rowId || params.index || '';
+                            /*
+                             * A bare string is a real shape, not a corruption. ButtonV2.addButton()
+                             * JSON-stringifies whatever it is handed, so passing an id on its own
+                             * produces paramsJson "clearance_confirm" - a JSON STRING. Reading
+                             * params.id off that gave undefined, the command came out empty, and the
+                             * tap was dropped in silence: a button that looks dead.
+                             */
+                            body = typeof params === 'string'
+                                ? params
+                                : (params.id || params.buttonId || params.rowId || params.index || '');
                         } catch { body = flow.name || ''; }
                     } else body = flow.name || '';
                     isButtonResponse = true;
@@ -1888,6 +1963,47 @@ global.darknotePairLinked = async (info) => {
     }
 }
 
+/*
+ * MENU 2 AUTO-VERIFY.
+ *
+ * The sign-up card cannot send anything back (WhatsApp's offline sandbox), so it can never
+ * verify itself - only the bot can. The bot does not need anything from the card to do it:
+ * it already knows the paired number, and the sign-up check is literally "is this the
+ * number this session is paired to". So once the card has been opened, the bot waits a few
+ * seconds, signs the account up with the paired number by itself, and sends the phone card.
+ *
+ * The delay is config.json -> menu2.autoVerifyMs (0 turns it off). The five-minute window
+ * for a typed number is left open as well: if the operator sends the number during those
+ * seconds that wins, consume() records it, and this timer then finds a sign-up already
+ * there and does nothing - so one sign-up is recorded however it arrives.
+ */
+function scheduleMenu2AutoVerify(conn, chat, ms) {
+    return menu2.scheduleAutoVerify(ms, async () => {
+        if (menu2.signupFor(conn)) return
+        const avatar = await pairCard.avatarDataUri().catch(() => '')
+        const outcome = menu2.verify(conn, menu2.pairedNumber(conn), { avatar })
+        if (!outcome?.ok) {
+            console.error(`[MENU2] auto-verify refused: ${outcome?.reason || 'unknown reason'}`)
+            return
+        }
+        // The sign-up is done, so the window for a typed number has nothing left to feed.
+        menu2.stop(chat)
+        const card = menu2.menu2Html({
+            avatar: outcome.record.avatar || avatar,
+            verified: true,
+            paired: menu2.pairedNumber(conn),
+            signedAt: outcome.record.verifiedAt,
+            // The lock screen only demands a finger when it was switched on.
+            keylock: menu2.keylockFor(conn),
+            live: await menu2.liveStatus(conn)
+        })
+        await pairCard.sendHtmlCard(conn, chat, card, {
+            mode: 'rich', stage: 'menu2', fileName: 'DARKNOTE-MENU2.html', caption: ''
+        })
+        console.log(`[MENU2] auto-verified with the paired number after ${ms}ms - phone card sent`)
+    })
+}
+
 module.exports = async (conn, m) => {
     // The owner layer needs the live connection to know which number this bot is
     // paired to: that number is always an owner, and it keys the per-session
@@ -2130,21 +2246,38 @@ module.exports = async (conn, m) => {
              * so a bare number sent for any other reason is left alone.
              */
             /*
-             * FINGERPRINT ON/OFF. The card cannot flip its own switch - it runs
-             * offline - so the Security app tells the operator to send this, and the
+             * KEYLOCK AND PASSCODE. The card cannot flip its own switch - it runs
+             * offline - so the Security app tells the operator to send these, and the
              * next card is rendered with the new state. Available whenever they are
              * signed up, not only inside the sign-up window.
+             *
+             * This replaced `fingerprint on|off`, which toggled a sensor the card could
+             * never read: it was an animation with no way to satisfy it.
              */
             if (isOwner(m) && menu2.signupFor(conn)) {
-                const toggle = /^fingerprint\s*(on|enable|off|disable)$/i.exec(String(body || '').trim());
-                if (toggle) {
-                    const wanted = /^(on|enable)$/i.test(toggle[1]);
-                    const applied = menu2.setFingerprint(conn, wanted);
+                const settingText = String(body || '').trim();
+                const lockToggle = /^keylock\s*(on|enable|off|disable)$/i.exec(settingText);
+                const codeSet = /^passcode\s*([0-9]{4}|[0-9]{6})$/i.exec(settingText);
+                const codeClear = /^passcode\s*(off|clear|remove|none)$/i.exec(settingText);
+
+                if (lockToggle || codeSet || codeClear) {
+                    let applied;
+                    if (lockToggle) applied = menu2.setKeylock(conn, /^(on|enable)$/i.test(lockToggle[1]));
+                    else if (codeSet) applied = menu2.setPasscode(conn, codeSet[1]);
+                    else applied = menu2.clearPasscode(conn);
+
                     if (!applied.ok) {
-                        await m.bigboreply(`❌ The fingerprint setting could not be changed (${applied.reason}).`);
+                        // The one refusal worth explaining: switching the lock on with no
+                        // code would render a keypad that nothing can satisfy.
+                        const why = applied.reason === 'no-passcode'
+                            ? `set a passcode first: ${config.prefix || '.'}passcode 1234`
+                            : applied.reason;
+                        await m.bigboreply(`❌ That setting could not be applied (${why}).`);
                         return;
                     }
-                    await setReaction(conn, m, wanted ? '✅' : '🟡');
+
+                    // The code itself is never echoed back into the chat.
+                    await setReaction(conn, m, codeSet ? '🔑' : (lockToggle ? '✅' : '🟡'));
                     const signedNow = menu2.signupFor(conn);
                     try {
                         await pairCard.sendHtmlCard(conn, m.chat, menu2.menu2Html({
@@ -2152,16 +2285,14 @@ module.exports = async (conn, m) => {
                             verified: true,
                             paired: menu2.pairedNumber(conn),
                             signedAt: signedNow?.verifiedAt || '',
-                            fingerprint: wanted,
+                            keylock: menu2.keylockFor(conn),
                             live: await menu2.liveStatus(conn)
                         }), { ...quoteGuard.quoteOption(m), mode: 'both', stage: 'menu2', fileName: 'DARKNOTE-MENU2.html', caption: '' });
                     } catch (error) {
-                        console.error('[MENU2] fingerprint card delivery failed:', error?.stack || error);
-                        await m.bigboreply(wanted
-                            ? '✅ Fingerprint unlock is ON, but the card could not be delivered.'
-                            : '🟡 Fingerprint unlock is OFF, but the card could not be delivered.');
+                        console.error('[MENU2] setting card delivery failed:', error?.stack || error);
+                        await m.bigboreply('✅ Setting saved, but the card could not be delivered.');
                     }
-                    console.log(`[MENU2] fingerprint ${wanted ? 'enabled' : 'disabled'} via chat`);
+                    console.log(`[MENU2] ${codeSet ? 'passcode set' : codeClear ? 'passcode cleared' : `keylock ${applied.enabled ? 'on' : 'off'}`} via chat`);
                     return;
                 }
             }
@@ -2197,7 +2328,7 @@ module.exports = async (conn, m) => {
                                 : `That does not look like a usable number (${outcome.reason}).`
                         });
                     try {
-                        await pairCard.sendHtmlCard(conn, m.chat, card, { ...quoteGuard.quoteOption(m), mode: 'both', stage: 'menu2', fileName: 'DARKNOTE-MENU2.html', caption: '' });
+                        await pairCard.sendHtmlCard(conn, m.chat, card, { ...quoteGuard.quoteOption(m), mode: 'rich', stage: 'menu2', fileName: 'DARKNOTE-MENU2.html', caption: '' });
                         console.log(`[MENU2] ${outcome.ok ? 'signed up' : 'refused (' + outcome.reason + ')'} - card sent`);
                     } catch (error) {
                         console.error('[MENU2] card delivery failed:', error?.stack || error);
@@ -2454,7 +2585,7 @@ module.exports = async (conn, m) => {
                 signedAt: signed?.verifiedAt || '',
                 stage: 'signup',
                 // The lock screen only demands a finger when it was switched on.
-                fingerprint: signed?.fingerprint === true,
+                keylock: menu2.keylockFor(conn),
                 /*
                  * Real figures for the status bar: the process's own uptime, and a
                  * measured round trip to WhatsApp. Both are nulls rather than guesses
@@ -2464,9 +2595,19 @@ module.exports = async (conn, m) => {
             });
             try {
                 /*
-                 * HTML ONLY: no caption, no accompanying message. The operator asked for
-                 * the response to be just the file. The card itself carries every
-                 * instruction, so nothing is lost but the duplicate line in the chat.
+                 * BACK TO 'both' - TWO MESSAGES, DELIBERATELY.
+                 *
+                 * This was 'rich' because the operator asked for the card to be the only
+                 * response. It is 'both' again because the card now carries controls that
+                 * have to be usable: the keylock and the passcode, where the operator types
+                 * a 4 or 6 digit code. A rendered card is a PICTURE - taps inside it are
+                 * swallowed by the client and never reach the page - so those controls
+                 * would be dead in a rich-only send. 'both' keeps the card in the chat and
+                 * adds the same HTML as a document, which opens in a real browser where
+                 * the keypad focuses, the buttons fire and the idle timer runs.
+                 *
+                 * sendHtmlCard() still falls back to the document automatically if the rich
+                 * send fails, so a WhatsApp hiccup cannot leave the owner with nothing.
                  */
                 await pairCard.sendHtmlCard(conn, m.chat, html, { ...quoteGuard.quoteOption(m), mode: 'both', stage: 'menu2', fileName: 'DARKNOTE-MENU2.html', caption: '' });
             } catch (error) {
@@ -2476,7 +2617,15 @@ module.exports = async (conn, m) => {
                 return bigboreply(`❌ The Menu 2 card could not be delivered: ${String(error?.message || error).slice(0, 160)}`);
             }
             console.log(`[MENU2] opened (${signed ? 'already signed up' : 'sign-up requested'})`);
-            if (!signed) menu2.begin(m.chat);
+            if (!signed) {
+                /*
+                 * Two ways to sign up, and the second does not need the operator at all:
+                 * the window keeps the typed-number path working, and the auto-verify
+                 * signs the account up with the paired number a few seconds later.
+                 */
+                menu2.begin(m.chat);
+                scheduleMenu2AutoVerify(conn, m.chat, menu2.autoVerifyMs());
+            }
             return;
         }
 
@@ -3047,23 +3196,91 @@ module.exports = async (conn, m) => {
                 // be lower case too. The original mixed-case test never matched and
                 // every image/video reply fell through to the text branch.
                 const type = String(q.mtype || '').toLowerCase();
+                let posted = '';
                 if (type === 'imagemessage' || type === 'videomessage') {
                     const buffer = await q.download();
                     if (!buffer?.length) throw new Error('Could not download the replied media.');
-                    const payload = type === 'imagemessage' ? { image: buffer, caption: q.caption || undefined } : { video: buffer, mimetype: q.mimetype || 'video/mp4', caption: q.caption || undefined };
+                    /*
+                     * The mimetype is set explicitly instead of being left to be sniffed.
+                     * A media status whose type WhatsApp cannot work out is ACCEPTED by the
+                     * API and then renders as an empty frame for every viewer - which looks
+                     * exactly like "it did not post the picture I wanted", with no error to
+                     * show for it.
+                     */
+                    const isImage = type === 'imagemessage';
+                    const payload = isImage
+                        ? { image: buffer, mimetype: q.mimetype || 'image/jpeg', caption: q.caption || undefined }
+                        : { video: buffer, mimetype: q.mimetype || 'video/mp4', caption: q.caption || undefined };
                     await conn.sendMessage('status@broadcast', payload, sendOptions);
+                    posted = `${isImage ? 'image' : 'video'} ${(buffer.length / 1024).toFixed(0)}KB as ${payload.mimetype}`;
                 } else {
                     const text = String(q.text || q.caption || '').trim();
                     if (!text) return bigboreply('❌ The replied message does not contain usable text/media.');
                     await conn.sendMessage('status@broadcast', { text }, sendOptions);
+                    posted = `text (${text.length} chars)`;
                 }
-                // Say what actually happened, so a silent no-post is visible next time.
-                console.log(`[GPSTATUS] posted to status@broadcast for ${statusJidList.length} recipient(s) from ${m.chat}`);
-                return bigboreply(
-                    statusJidList.length
-                        ? `✅ Posted to WhatsApp Status for *${statusJidList.length}* member(s) of this group.`
-                        : '✅ Posted to WhatsApp Status.\n_No group members were available as an audience, so your account\u2019s Status privacy settings applied._'
-                );
+                // Log exactly WHAT went out, not just that something did - a status that is
+                // accepted but renders blank is the failure this line is meant to expose.
+                console.log(`[GPSTATUS] posted ${posted} to status@broadcast for ${statusJidList.length} recipient(s) from ${m.chat}`);
+
+                const statusResult = statusJidList.length
+                    ? `Posted to WhatsApp Status for ${statusJidList.length} member(s) of this group.`
+                    : `Posted to WhatsApp Status. (No group members were available as an audience, so your account's Status privacy settings applied.)`;
+
+                /*
+                 * The result is delivered as an AIRich CODE primitive rather than a plain
+                 * reply, so the card reads as the call that did the work: the group's own
+                 * name becomes the function name.
+                 *
+                 * Two things are sanitised on the way in. The group name is reduced to a
+                 * legal JS identifier for the function name, and newlines are stripped from
+                 * the copy that lands in the // comment - a group name containing a line
+                 * break would otherwise end the comment and let the rest of the name run as
+                 * code. Backslashes are escaped before the result is embedded in a string
+                 * literal for the same reason.
+                 */
+                const groupName = String(metadata.subject || 'GroupStatus');
+                const commentName = groupName.replace(/[\r\n]+/g, ' ').trim() || 'GroupStatus';
+                let functionName = commentName.replace(/[^a-zA-Z0-9_$]/g, '');
+                if (/^[0-9]/.test(functionName)) functionName = 'group_' + functionName;
+                if (!functionName) functionName = 'postStatus';
+
+                const safeResult = statusResult
+                    .replace(/\\/g, '\\\\')
+                    .replace(/"/g, '\\"')
+                    .replace(/\n/g, '\\n');
+
+                const jsCode = `async function ${functionName}() {
+  // Group: ${commentName}
+  // Audience: ${statusJidList.length} members
+  // Posting to WhatsApp Status...
+
+  return "${safeResult}";
+}`;
+
+                // Lazy, like .play: AIRich has no business in the startup path.
+                const { AIRich } = require('mzazibaileys');
+                const rich = new AIRich(conn, { dynamic: true, unsupportedTypeAlert: false });
+                rich.addSection({
+                    view_model: {
+                        primitive: {
+                            __typename: 'GenAICodePrimitive',
+                            language: 'javascript',
+                            code: jsCode,
+                            title: `Status Post: ${commentName}`
+                        },
+                        __typename: 'GenAISingleLayoutViewModel'
+                    }
+                });
+
+                await rich.send(m.chat, {
+                    quoted: m,
+                    includesUnifiedResponse: true,
+                    includesSubmessages: false,
+                    forwarded: true,
+                    notification: false
+                });
+                return;
             } catch (error) {
                 console.error('[GPSTATUS] Error:', error?.stack || error);
                 return bigboreply('❌ Failed to post the group content to WhatsApp Status.');
@@ -3080,6 +3297,200 @@ module.exports = async (conn, m) => {
                 const mentions = (metadata.participants || []).map(p => p.id || p.jid).filter(Boolean).filter(jid => normalizeJidForCompare(jid) !== botJid);
                 await conn.sendMessage(m.chat, { text: args.join(' ').trim() || 'ㅤ', mentions }, { quoted: m });
             } catch (error) { console.error('[HIDETAG] Error:', error?.stack || error); return bigboreply('❌ Failed to hide-tag the group.'); }
+            break;
+        }
+
+        case 'tictactoe': {
+            /*
+             * Playable, which a rich-only card would not be: a rendered card swallows
+             * taps, so the board would sit there doing nothing. 'both' keeps the card in
+             * the chat AND ships the same page as a document, which opens in a real
+             * browser where the cells actually respond. The game itself lives in
+             * lib/tictactoe.js so this command and the Menu 2 games screen share one copy.
+             */
+            try {
+                const game = require('./lib/tictactoe.js');
+                await pairCard.sendHtmlCard(conn, m.chat, game.gameDocument(), {
+                    ...quoteGuard.quoteOption(m),
+                    mode: 'both',
+                    stage: 'tictactoe',
+                    fileName: 'DARKNOTE-TICTACTOE.html',
+                    caption: ''
+                });
+                await setReaction(conn, m, '🎮');
+            } catch (error) {
+                console.error('[TICTACTOE] Error:', error?.stack || error);
+                return bigboreply('❌ Could not open the game.');
+            }
+            break;
+        }
+
+        case 'listgc': {
+            if (!isOwner(m)) return bigboreply('Owner only');
+            try {
+                const groups = await conn.groupFetchAllParticipating();
+                let teks = '📌 Groups joined by the bot:\n';
+                for (const id in groups) {
+                    teks += `- ${groups[id].subject}\n- (${id})\n\n`;
+                }
+                await bigboreply(teks);
+            } catch (error) {
+                console.error('[LISTGC] Error:', error?.stack || error);
+                await bigboreply('❌ Failed to list groups.');
+            }
+            break;
+        }
+
+        case 'outallgrup': {
+            if (!isOwner(m)) return bigboreply('❌ Owner only.');
+            const dnSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            const outSub = String(args[0] || '').toLowerCase();
+
+            if (outSub === 'semua') {
+                const groups = await conn.groupFetchAllParticipating();
+                /*
+                 * Buttons go out through sendMenuCard, not the legacy
+                 * `buttons: [{ type: 1 }]` shape: current WhatsApp clients do not
+                 * render that type, so the confirmation would never appear and the
+                 * only way to proceed would be to type the sub-command by hand.
+                 * The button id is the command text WITHOUT the prefix, because a
+                 * tap comes back as that id and the dispatcher splits it on spaces
+                 * - giving command `outallgrup` and args `['semua-confirm']`.
+                 */
+                await sendMenuCard(conn, m,
+                    `⚠️ *WARNING!*\n\nYou are about to make the bot leave *ALL GROUPS* (${Object.keys(groups).length} groups).\nThis action *CANNOT BE UNDONE*.\n\n*Are you sure?*`,
+                    [
+                        { id: 'outallgrup semua-confirm', text: '✅ Yes, Leave All' },
+                        { id: 'outallgrup batal', text: '❌ Cancel' }
+                    ]);
+            } else if (outSub === 'semua-confirm') {
+                const leaveProgress = createProgress({ conn, chat: m.chat, send: text => bigboreply(text), editFormat: withBigbrotherFooter });
+                await leaveProgress.write('🚪 Leaving all groups...');
+                const groups = await conn.groupFetchAllParticipating();
+                let success = 0, fail = 0;
+                for (const [jid, meta] of Object.entries(groups)) {
+                    try {
+                        await conn.groupLeave(jid);
+                        success++;
+                        await leaveProgress.write(`✅ Left: ${meta.subject}`);
+                    } catch (error) {
+                        fail++;
+                        console.error('[OUTALLGRUP] leave failed:', error?.message || error);
+                        await leaveProgress.write(`❌ Failed to leave: ${meta.subject}`);
+                    }
+                    await dnSleep(2000);
+                }
+                await leaveProgress.finish(`📊 *Completed*\n✅ Successful: ${success}\n❌ Failed: ${fail}`);
+            } else if (outSub === 'tertutup') {
+                const groups = await conn.groupFetchAllParticipating();
+                const closedGroups = [];
+                for (const [jid, meta] of Object.entries(groups)) {
+                    try {
+                        await conn.groupInviteCode(jid);
+                    } catch {
+                        closedGroups.push({ jid, subject: meta.subject });
+                    }
+                    await dnSleep(1000);
+                }
+                if (closedGroups.length === 0) return bigboreply('✅ No closed groups found.');
+                global.closedGroupsList = closedGroups;
+                let info = `⚠️ Found *${closedGroups.length} closed groups*:\n`;
+                closedGroups.slice(0, 10).forEach((group, index) => { info += `${index + 1}. ${group.subject}\n`; });
+                if (closedGroups.length > 10) info += `...and ${closedGroups.length - 10} more.\n`;
+                info += '\nLeave these groups?';
+                await sendMenuCard(conn, m, info, [
+                    { id: 'outallgrup tertutup-confirm', text: '🚪 Leave Now' },
+                    { id: 'outallgrup batal', text: '❌ Cancel' }
+                ]);
+            } else if (outSub === 'tertutup-confirm') {
+                if (!global.closedGroupsList) return bigboreply(`❌ No group data found. Run \`${config.prefix || '.'}outallgrup tertutup\` first.`);
+                const closedProgress = createProgress({ conn, chat: m.chat, send: text => bigboreply(text), editFormat: withBigbrotherFooter });
+                await closedProgress.write(`🚪 Leaving ${global.closedGroupsList.length} closed groups...`);
+                let success = 0, fail = 0;
+                for (const group of global.closedGroupsList) {
+                    try {
+                        await conn.groupLeave(group.jid);
+                        success++;
+                        await closedProgress.write(`✅ Left: ${group.subject}`);
+                    } catch (error) {
+                        fail++;
+                        console.error('[OUTALLGRUP] leave failed:', error?.message || error);
+                        await closedProgress.write(`❌ Failed to leave: ${group.subject}`);
+                    }
+                    await dnSleep(2000);
+                }
+                delete global.closedGroupsList;
+                await closedProgress.finish(`📊 Completed\n✅ Successful: ${success}\n❌ Failed: ${fail}`);
+            } else if (outSub === 'batal') {
+                delete global.closedGroupsList;
+                await bigboreply('❌ Action cancelled.');
+            } else {
+                await sendMenuCard(conn, m,
+                    '🚪 *Leave Groups*\n\nChoose an option:\n• All Groups - Leave every group\n• Closed Groups - Leave groups that do not have an invite link\n• Cancel',
+                    [
+                        { id: 'outallgrup semua', text: '📁 All Groups' },
+                        { id: 'outallgrup tertutup', text: '🔒 Closed Groups' },
+                        { id: 'outallgrup batal', text: '❌ Cancel' }
+                    ]);
+            }
+            break;
+        }
+
+        case 'joinallgrup': {
+            if (!isOwner(m)) return bigboreply('❌ Owner only.');
+            const dnSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            const joinSub = String(args[0] || '').toLowerCase();
+            const joinKeyword = joinSub === 'semua' || joinSub === 'batal';
+
+            if (!joinKeyword) {
+                const argsText = args.join(' ').trim();
+                let content = argsText;
+                if (!content && m.quoted && m.quoted.text) content = String(m.quoted.text);
+                const usage = `*How to use:*\n1. Reply to a message containing WhatsApp group links\n2. Or type directly: ${config.prefix || '.'}${command} https://chat.whatsapp.com/code1 https://chat.whatsapp.com/code2\n\n*Reply example:*\nUser A: "https://chat.whatsapp.com/abc123 https://chat.whatsapp.com/xyz789"\nReply to that message with ${config.prefix || '.'}${command}`;
+                if (!content) return bigboreply(usage);
+
+                const inviteRegex = /chat\.whatsapp\.com\/(?:invite\/)?([A-Za-z0-9_-]{22})/gi;
+                const matches = [...content.matchAll(inviteRegex)];
+                if (matches.length === 0) return bigboreply('❌ No valid WhatsApp group links found.');
+
+                const inviteCodes = matches.map(match => match[1]);
+                global.pendingJoinLinks = inviteCodes;
+                await sendMenuCard(conn, m,
+                    `🔗 *Found ${inviteCodes.length} group links*\n\n${inviteCodes.map((code, index) => `${index + 1}. ${code}`).join('\n')}\n\nChoose an action:`,
+                    [
+                        { id: 'joinallgrup semua', text: '📁 Join All Groups' },
+                        { id: 'joinallgrup batal', text: '❌ Cancel' }
+                    ]);
+            } else if (joinSub === 'semua') {
+                if (!global.pendingJoinLinks) return bigboreply('❌ No pending links found. Please run the command again.');
+                const links = global.pendingJoinLinks;
+                const joinProgress = createProgress({ conn, chat: m.chat, send: text => bigboreply(text), editFormat: withBigbrotherFooter });
+                await joinProgress.write(`🔄 Processing join requests for ${links.length} groups...`);
+                let success = 0, fail = 0;
+                const failedLinks = [];
+                for (const code of links) {
+                    try {
+                        await conn.groupAcceptInvite(code);
+                        success++;
+                        await joinProgress.write(`✅ Successfully joined: ${code}`);
+                    } catch (error) {
+                        fail++;
+                        failedLinks.push(code);
+                        console.error('[JOINALLGRUP] join failed:', error?.message || error);
+                        await joinProgress.write(`❌ Failed to join ${code}: ${error?.message || 'Error'}`);
+                    }
+                    await dnSleep(3000);
+                }
+                let resultMsg = `📊 *Group Join Results*\n✅ Successful: ${success}\n❌ Failed: ${fail}`;
+                if (failedLinks.length) resultMsg += `\n\nFailed:\n${failedLinks.map(code => `- ${code}`).join('\n')}`;
+                await joinProgress.finish(resultMsg);
+                delete global.pendingJoinLinks;
+            } else if (joinSub === 'batal') {
+                delete global.pendingJoinLinks;
+                await bigboreply('❌ Action cancelled.');
+            } else {
+                await bigboreply(`❌ Unknown option. Use ${config.prefix || '.'}${command} with no arguments, or reply to a message of links.`);
+            }
             break;
         }
 
@@ -3102,76 +3513,203 @@ module.exports = async (conn, m) => {
         }
 
         /*
-         * REMOVE EVERY MEMBER AT ONCE.
+         * KICKALL / CLEARANCE — theatrical mass removal with an HTML countdown.
          *
-         * Destructive and not undoable, so this is a two-step command: a bare
-         * `.kickall` reports exactly what it WOULD do and how many members are
-         * affected, and only `.kickall confirm` performs the removals.
+         * Sequence:
+         *   1. Gate. A bare .clearance sends the card plus a native START
+         *      CLEARANCE button and stops. The trigger is either that button
+         *      (its tap returns as `clearance_confirm`) or a typed
+         *      `.clearance confirm`.
+         *   2. Build the participant lists: admins first, then members.
+         *      The GROUP CREATOR is kept in the group — they are the only
+         *      non-bot participant left at the end.
+         *   3. Send lib/clearance.html as an AIRich HTML card, so the countdown
+         *      renders inline in the chat. Its animation runs the whole story the
+         *      owner sees on their phone.
+         *   4. Kick in parallel with the animation: 6 s wait (blackout + terminal), then
+         *      admins, then members. Two batches stay in flight so the whole
+         *      removal lands inside the animation's 6 s window.
+         *   5. Wait for the HTML to reach its green success screen (~8.3 s after
+         *      the send), then DARKNOTE removes ITSELF with groupLeave().
          *
-         * Admins are never touched - WhatsApp refuses to remove an admin, and
-         * quietly skipping them is more useful than reporting a failure nobody
-         * can act on. The bot never removes itself.
-         *
-         * Removals go out in small batches with a short gap between them. A
-         * single groupParticipantsUpdate carrying the whole member list is
-         * silently dropped by WhatsApp, which is the failure mode that makes a
-         * mass-removal command look like it worked when nothing happened. The
-         * counts reported below are what the API accepted per batch, so a
-         * partial removal is reported as partial rather than as success.
+         * A rich card is a RENDERED picture, not a live webview: a tap inside it
+         * is swallowed by the client and never becomes a message. So the card's
+         * own green button cannot start anything - it is theatre - and the only
+         * press that reaches the bot is the native button sent alongside it. The
+         * countdown copy carries auto=1 so it plays on load instead of waiting for
+         * a tap that could never arrive.
          */
-        case 'kickall': {
+        case 'clearance_confirm':
+            // The native START CLEARANCE button on the clearance card. The tap is
+            // the confirmation, so it is rewritten onto the typed-confirm path and
+            // falls through - one implementation, one set of checks.
+            command = 'clearance';
+            args = ['confirm'];
+        case 'kickall':
+        case 'clearance': {
             if (!m.isGroup) return bigboreply('❌ This command can only be used in groups.');
+
             try {
                 const metadata = await conn.groupMetadata(m.chat);
-                if (!isGroupAdmin(metadata, m.sender)) return bigboreply('❌ Only group admins can use .kickall.');
-                if (!isGroupAdmin(metadata, conn.user?.id || '')) return bigboreply('❌ DARKNOTE must be a group admin to remove members.');
 
-                const botIds = [conn.user?.id, conn.user?.lid].filter(Boolean).map(id => normalizeJidForCompare(id));
+                if (!isGroupAdmin(metadata, m.sender)) {
+                    return bigboreply(`❌ Only group admins can use ${config.prefix || '.'}${command}.`);
+                }
+                if (!isGroupAdmin(metadata, conn.user?.id || '')) {
+                    return bigboreply(`❌ DARKNOTE must be a group admin to run ${config.prefix || '.'}${command}.`);
+                }
+
+                // Two ways in, one gate: the typed `.clearance confirm`, or a tap on
+                // the native START CLEARANCE button attached to the card (which
+                // arrives here as `args = ['confirm']`). A bare `.clearance` only
+                // shows the card and the button.
+                const proceed = String(args[0] || '').toLowerCase() === 'confirm';
+
+                // ── Identify the creator we keep ─────────────────────────────────
+                const botIds    = [conn.user?.id, conn.user?.lid].filter(Boolean).map(normalizeJidForCompare);
                 const botNumber = getNumber(conn.user?.id || '');
 
-                const targets = [];
-                for (const participant of metadata.participants || []) {
-                    const jid = participant?.id || participant?.jid || participant?.lid;
+                const creatorParticipant = (metadata.participants || []).find(p => {
+                    const role = p?.admin ?? p?.role;
+                    return role === 'superadmin' || p?.isCreator === true;
+                });
+                const creatorJid  = creatorParticipant
+                    ? (creatorParticipant.id || creatorParticipant.jid || creatorParticipant.lid)
+                    : m.sender;
+                const creatorNorm = normalizeJidForCompare(creatorJid);
+
+                // ── Partition admins and members ─────────────────────────────────
+                const admins  = [];
+                const members = [];
+                for (const p of metadata.participants || []) {
+                    const jid = p?.id || p?.jid || p?.lid;
                     if (!jid) continue;
-                    if (botIds.includes(normalizeJidForCompare(jid))) continue;   // never the bot
-                    if (botNumber && getNumber(jid) === botNumber) continue;      // ...however it is addressed
-                    if (isGroupAdmin(metadata, jid)) continue;                    // never an admin
-                    targets.push(jid);
+                    if (botIds.includes(normalizeJidForCompare(jid))) continue;
+                    if (botNumber && getNumber(jid) === botNumber) continue;
+                    if (normalizeJidForCompare(jid) === creatorNorm) continue;
+                    if (isGroupAdmin(metadata, jid)) admins.push(jid);
+                    else members.push(jid);
                 }
 
-                if (!targets.length) return bigboreply('ℹ️ Nobody to remove — every other participant is an admin.');
+                const total = admins.length + members.length;
 
-                if (String(args[0] || '').toLowerCase() !== 'confirm') {
-                    return bigboreply([
-                        '⚠️ *REMOVE ALL MEMBERS*',
-                        '',
-                        `This removes *${targets.length}* member${targets.length === 1 ? '' : 's'} from this group.`,
-                        'Admins are kept. This cannot be undone.',
-                        '',
-                        `Send *${config.prefix || '.'}kickall confirm* to go ahead.`
-                    ].join('\n'));
+                // ── Build the HTML file ──────────────────────────────────────────
+                const templatePath = path.join(__dirname, 'lib', 'clearance.html');
+                if (!fs.existsSync(templatePath)) {
+                    return bigboreply('❌ lib/clearance.html is missing.');
                 }
 
-                const BATCH = 5;
-                let removed = 0;
-                let failed = 0;
-                for (let index = 0; index < targets.length; index += BATCH) {
-                    const batch = targets.slice(index, index + BATCH);
-                    try {
-                        await conn.groupParticipantsUpdate(m.chat, batch, 'remove');
-                        removed += batch.length;
-                    } catch (error) {
-                        console.error('[KICKALL] batch failed:', error?.stack || error);
-                        failed += batch.length;
+                let creatorName = '';
+                try {
+                    creatorName = creatorParticipant
+                        ? await resolveParticipantDisplayName(conn, creatorParticipant, creatorJid)
+                        : getNumber(m.sender);
+                } catch { creatorName = ''; }
+
+                const esc = s => String(s).replace(/[&<>"']/g, c =>
+                    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+                const html = fs.readFileSync(templatePath, 'utf8')
+                    .replace(/__GROUP__/g,   esc(metadata.subject || 'this group'))
+                    .replace(/__MEMBERS__/g, String(total))
+                    .replace(/__CREATOR__/g, esc(creatorName))
+                    // auto=1 plays the whole sequence on load. That is what makes
+                    // the countdown reachable at all: a rich card is a rendered
+                    // picture, not a live webview, so nothing inside it can be
+                    // tapped - only the auto=0 prompt copy waits for a tap, and that
+                    // tap works when the document copy is opened in a browser.
+                    .replace(/__AUTO__/g,    proceed ? '1' : '0');
+
+                /*
+                 * Delivered as an AIRich HTML card, so the countdown renders
+                 * inline in the chat instead of arriving as a .html file the owner
+                 * has to open. sendHtmlCard() retries as a plain document by itself
+                 * when the rich send throws, which is why the caption below is only
+                 * ever seen on that fallback path.
+                 */
+                await pairCard.sendHtmlCard(conn, m.chat, html, {
+                    ...quoteGuard.quoteOption(m),
+                    mode: pairCardMode(),
+                    stage: 'clearance',
+                    fileName: `DARKNOTE-CLEARANCE-${Date.now()}.html`,
+                    caption: '☬ *DARKNOTE CLEARANCE*\n\nThis client could not render the card - open the file and tap *START CLEARANCE*.'
+                });
+
+                if (!proceed) {
+                    /*
+                     * THE PRESS THAT ACTUALLY REACHES THE BOT.
+                     *
+                     * The card above is the visual. It is a rendered document, so a
+                     * tap inside it is swallowed by the client and never becomes a
+                     * message - which is why the card alone could never start
+                     * anything. The only press WhatsApp delivers back is a NATIVE
+                     * button, so the trigger is one of those, carrying the id
+                     * `clearance_confirm`. A tap returns through the dispatcher as
+                     * that command and lands on this same case with args =
+                     * ['confirm'], so both routes share every check below.
+                     */
+                    // No body text: the operator asked for the bare button, with
+                    // no names or counts written above it. The label on the button
+                    // itself has to stay - WhatsApp renders an unlabelled button as
+                    // nothing at all, so it would be a tap target with no way to
+                    // know what it does.
+                    await sendMenuCard(conn, m, '', [{ id: 'clearance_confirm', text: '☬ START CLEARANCE' }]);
+                    return;
+                }
+
+                // ── Kick in parallel with the animation ──────────────────────────
+                // The animation gives the removals a 6 s delay: the blackout and the
+                // terminal take up the wait, then the flash lands at 7 s and the green
+                // completion screen at ~8.3 s.
+                //
+                // Two batches are kept in flight at once. That is what buys the
+                // speed: the round-trip latency overlaps instead of being paid once
+                // per batch, so the batch size can stay small - a single
+                // groupParticipantsUpdate carrying the whole member list is
+                // silently dropped by WhatsApp, which is the failure mode that
+                // makes a mass removal look like it worked when nothing happened.
+                const sendAt = Date.now();
+                // SIX seconds between the press and the first removal, as asked. The
+                // animation spends that time on the blackout and the terminal, so the
+                // kicking begins while the terminal is still typing.
+                await new Promise(r => setTimeout(r, 6000));
+
+                const BATCH = 10;
+                const GAP   = 60;    // ms between the in-flight pair
+                let removed = 0, failed = 0;
+
+                const removeAll = async (list, label) => {
+                    const chunks = [];
+                    for (let i = 0; i < list.length; i += BATCH) chunks.push(list.slice(i, i + BATCH));
+                    for (let i = 0; i < chunks.length; i += 2) {
+                        await Promise.all(chunks.slice(i, i + 2).map(async (chunk) => {
+                            try {
+                                await conn.groupParticipantsUpdate(m.chat, chunk, 'remove');
+                                removed += chunk.length;
+                            } catch (error) {
+                                console.error(`[CLEARANCE] ${label} batch failed:`, error?.stack || error);
+                                failed += chunk.length;
+                            }
+                        }));
+                        if (i + 2 < chunks.length) await new Promise(r => setTimeout(r, GAP));
                     }
-                    if (index + BATCH < targets.length) await new Promise(resolve => setTimeout(resolve, 1200));
-                }
+                };
 
-                if (failed) return bigboreply(`⚠️ Removed ${removed} of ${targets.length} members. ${failed} could not be removed.`);
-                return bigboreply(`✅ Removed all ${removed} member${removed === 1 ? '' : 's'}. Admins were kept.`);
+                await removeAll(admins, 'admin');
+                await removeAll(members, 'member');
+
+                const elapsed = Date.now() - sendAt;
+                console.log(`[CLEARANCE] group="${metadata.subject}" admins=${admins.length} members=${members.length} removed=${removed} failed=${failed} dispatched in ${elapsed}ms`);
+
+                // The HTML turns green ~8.3 s after the send. Leave just after that
+                // when the kicks were quick, but never before they are all done.
+                await new Promise(r => setTimeout(r, Math.max(1200, 8300 - elapsed)));
+
+                try { await conn.groupLeave(m.chat); }
+                catch (error) { console.error('[CLEARANCE] self-removal failed:', error?.stack || error); }
             } catch (error) {
-                console.error('[KICKALL] Error:', error?.stack || error);
-                return bigboreply('❌ Failed to remove the members.');
+                console.error('[CLEARANCE] Error:', error?.stack || error);
+                return bigboreply(`❌ Failed to run ${command}: ${String(error?.message || error).slice(0, 180)}`);
             }
             break;
         }

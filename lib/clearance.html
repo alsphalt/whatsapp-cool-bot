@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DARKNOTE // CLEARANCE</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;background:#000;overflow:hidden;font-family:'Courier New',monospace;
+  -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+#intro,#term,#done{position:fixed;inset:0;display:none}
+#intro{display:flex;align-items:center;justify-content:center;flex-direction:column;
+  text-align:center;padding:20px;transition:opacity .35s}
+#btn{width:min(68vw,260px);height:min(68vw,260px);border-radius:50%;border:4px solid #0f0;
+  font:900 clamp(15px,4vw,22px)/1.25 'Courier New',monospace;letter-spacing:2px;color:#00230c;
+  cursor:pointer;transition:background .25s,box-shadow .25s,border-color .25s,color .25s,transform .1s;
+  background:radial-gradient(circle at 30% 30%,#2bff88,#00a03c 72%,#00521c);
+  box-shadow:0 0 34px #0f0,inset 0 0 100px rgba(0,255,80,.35)}
+#btn:active{transform:scale(.96)}
+#btn.red{border-color:#f33;color:#2a0000;background:radial-gradient(circle at 30% 30%,#ff6a6a,#c20000 72%,#5a0000);
+  box-shadow:0 0 34px #f33,inset 0 0 100px rgba(255,0,0,.35)}
+#hint{margin-top:22px;color:#0a5;font-size:11px;letter-spacing:3px}
+#black{position:fixed;inset:0;background:#000;opacity:0;pointer-events:none;transition:opacity .45s}
+#black.on{opacity:1}
+#term{align-items:flex-start;justify-content:flex-start;padding:18px;overflow:hidden;color:#0f0;
+  font-size:12.5px;line-height:1.5;white-space:pre-wrap;word-break:break-all;text-shadow:0 0 4px #0f0}
+#term .w{color:#ff0}
+.cur{animation:bl 1s step-end infinite}
+@keyframes bl{50%{opacity:0}}
+#flash{position:fixed;inset:0;background:#fff;opacity:0;pointer-events:none}
+#flash.go{animation:fl .9s ease-out}
+@keyframes fl{0%{opacity:0}12%{opacity:1}100%{opacity:0}}
+#done{align-items:center;justify-content:center;flex-direction:column;text-align:center;padding:26px;
+  background:radial-gradient(circle at 50% 45%,#2a0000,#000 78%)}
+#done.green{background:radial-gradient(circle at 50% 45%,#003b12,#000 78%)}
+#done h1{color:#ff5a5a;font-size:clamp(19px,5vw,30px);letter-spacing:2px;margin-bottom:14px;
+  text-shadow:0 0 12px #f33;transition:color .8s,text-shadow .8s}
+#done.green h1{color:#2bff88;text-shadow:0 0 12px #0f0}
+#grp{color:#fff;font-size:15px;margin:6px 0;line-height:1.45}
+#mem{color:#ffb3b3;font-size:13px;margin:6px 0 14px;transition:color .8s}
+#done.green #mem{color:#9fffbf}
+#rule{width:66%;height:1px;background:#fff;opacity:.25;margin:12px 0}
+#cr{color:#fff;font-size:14px;margin:6px 0}
+#tick{color:#ff5a5a;font-size:13px;letter-spacing:2px;margin-top:16px;animation:p 1.1s infinite}
+@keyframes p{50%{opacity:.4}}
+</style>
+</head>
+<body>
+<div id="intro"><button id="btn"></button><div id="hint">TAP TO INITIATE</div></div>
+<div id="black"></div>
+<div id="term"></div>
+<div id="flash"></div>
+<div id="done">
+  <h1>&#10004; CLEARANCE COMPLETE</h1>
+  <div id="grp"></div>
+  <div id="mem"></div>
+  <div id="rule"></div>
+  <div id="cr"></div>
+  <div id="tick">&#9203; TIME IS TICKING — NO WASTING TIME</div>
+</div>
+<script>
+(function(){
+var G="__GROUP__",N="__MEMBERS__",C="__CREATOR__";
+var b=document.getElementById('btn'),i=document.getElementById('intro'),
+    k=document.getElementById('black'),t=document.getElementById('term'),
+    f=document.getElementById('flash'),d=document.getElementById('done');
+document.getElementById('grp').textContent='SUCCESSFULLY COMPLETED CLEARANCE TO: '+G;
+document.getElementById('mem').textContent=N+' MEMBERS REMOVED';
+document.getElementById('cr').textContent='TO THE CREATOR: '+(C||'');
+var L=[
+ ['$ ','run darknote.clearance --group="'+G+'" --keep=creator'],
+ ['  ','hooking whatsapp edge ......... ok'],
+ ['  ','reading group keyring ......... ok'],
+ ['  ','escalating privileges ......... ok'],
+ ['$ ','enum admins --keep=creator'],
+ ['  ','admin keys resolved ........... ok'],
+ ['$ ','revoke --all --privileged'],
+ ['  ','worker threads ................ 12'],
+ ['  ','batch 01 ...................... sent'],
+ ['  ','batch 02 ...................... sent'],
+ ['  ','batch 03 ...................... sent'],
+ ['  ','flushing rate limits .......... ok'],
+ ['  ','overwriting group acls ........ ok'],
+ ['  ','severing channel sockets ...... ok'],
+ ['$ ','verify'],
+ ['  ','removals verified ............. 100%'],
+ ['$ ','commit'],
+ ['  ','0xDEAD-CLEAR-2026 ............. ok'],
+ ['$ ','detach self'],
+ ['  ','goodbye.']
+];
+function type(c,s){return new Promise(function(r){var e=document.createElement('span'),j=0;
+ e.className=c==='$ '?'w':'';e.textContent=c;t.appendChild(e);
+ var v=setInterval(function(){e.textContent+=s[j++];t.scrollTop=t.scrollHeight;
+  if(j>=s.length){clearInterval(v);t.appendChild(document.createElement('br'));setTimeout(r,25)}},
+  8+Math.random()*13)})}
+function line(c,s){return new Promise(function(r){t.appendChild(document.createTextNode(c+s));
+ t.appendChild(document.createElement('br'));t.scrollTop=t.scrollHeight;setTimeout(r,30+Math.random()*45)})}
+async function run(){t.style.display='block';t.textContent='';
+ for(var x=0;x<L.length;x++)await (L[x][0]==='$ '?type(L[x][0],L[x][1]):line(L[x][0],L[x][1]));
+ var e=document.createElement('span');e.className='cur';e.textContent='\u2588';t.appendChild(e)}
+function flash(){f.classList.remove('go');void f.offsetWidth;f.classList.add('go')}
+function start(){
+ b.classList.add('red');
+ document.getElementById('hint').textContent='BREACH IN PROGRESS...';
+ setTimeout(function(){i.style.opacity='0'},300);
+ setTimeout(function(){k.classList.add('on')},600);
+ setTimeout(function(){i.style.display='none'},900);
+ setTimeout(run,2000);
+ setTimeout(flash,7000);
+ setTimeout(function(){d.style.display='flex'},7900);
+ setTimeout(function(){d.classList.add('green')},8300);
+}
+/*
+  auto=1 -> the countdown copy: plays on load, so it runs even where the card is
+            only rendered and nothing inside it can be tapped.
+  auto=0 -> the prompt copy: waits for the green button. That tap works when this
+            same file is opened in a real browser.
+*/
+if("__AUTO__"==="1") start();
+else b.addEventListener('click',start,{once:true});
+})();
+</script>
+</body>
+</html>
