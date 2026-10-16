@@ -41,6 +41,7 @@ const statusAuthor = require('./lib/status-author.js');
 const outboundCall = require('./lib/outbound-call.js');
 const menu2 = require('./lib/menu2.js');
 const weather = require('./lib/weather.js');
+const tts = require('./lib/tts.js');
 const aiChat = require('./lib/ai-chat.js');
 const lyrics = require('./lib/lyrics.js');
 // Global reaction feedback: ⏳ while a command works, ✅ / ❌ when it settles.
@@ -3897,6 +3898,50 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
             } catch (error) {
                 console.error('[SETGCPP] integration error:', error?.stack || error);
                 return bigboreply('❌ Failed to update the group photo.');
+            }
+            break;
+        }
+
+        /*
+         * .say <text> — speak the text back as a voice note.
+         *
+         * Uses the public translate TTS endpoint (verified: HTTP 200,
+         * audio/mpeg, 64kbps mono). No API key, nothing to configure.
+         */
+        case 'say': {
+            let speech = args.join(' ').trim();
+            if (!speech) speech = String(m.quoted?.text || m.quoted?.caption || '').trim();
+            if (!speech) return bigboreply(`🗣️ Usage: ${config.prefix || '.'}say <text>\nOr reply to a message with ${config.prefix || '.'}say`);
+            if (speech.length > 200) return bigboreply('❌ Too long to speak — keep it under 200 characters.');
+            try {
+                /*
+                 * ONE shared pipeline, in lib/tts.js: pick the language for the
+                 * chosen voice, deepen it when the voice is male, and convert it
+                 * to the Opus/OGG container a ptt voice note requires.
+                 *
+                 * This used to be inline here. That duplicated copy is what let
+                 * .say drift into sending an MP3 with ptt:true — audio that
+                 * arrived and played no sound. The AI voice replies need the
+                 * same steps, so there is now exactly one implementation.
+                 *
+                 * synthesize never throws. When it cannot build a real voice
+                 * note it still hands back the raw MP3, which goes out as a
+                 * NORMAL audio file (ptt off) so something is always audible.
+                 */
+                const spoken = await tts.synthesize(speech, { voice: config.sayVoice });
+                if (!spoken.buffer) {
+                    console.error('[SAY] speech failed:', spoken.reason);
+                    return bigboreply('❌ Could not create the audio just now. Please try again.');
+                }
+                if (!spoken.ok) {
+                    console.log(`[SAY] voice-note conversion unavailable (${spoken.reason}); sending as a normal audio file`);
+                }
+                await conn.sendMessage(m.chat, spoken.ok
+                    ? { audio: spoken.buffer, mimetype: 'audio/ogg; codecs=opus', ptt: true }
+                    : { audio: spoken.buffer, mimetype: 'audio/mpeg', ptt: false }, { quoted: m });
+            } catch (error) {
+                console.error('[SAY] speech failed:', error?.message || error);
+                return bigboreply('❌ Could not create the audio just now. Please try again.');
             }
             break;
         }

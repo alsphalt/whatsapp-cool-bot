@@ -17,6 +17,7 @@
     "results": 5,
     "maxVideoBytes": 67108864
   },
+  "sayVoice": "en",
   "instagram": {
     "endpoint": "https://aemt.me/download/igstalk?username={username}",
     "timeoutMs": 20000
