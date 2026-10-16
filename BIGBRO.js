@@ -3300,6 +3300,70 @@ module.exports = async (conn, m) => {
             break;
         }
 
+        case 'google':
+        case 'gsearch': {
+            /*
+             * Google search through the MZAZI endpoint. The key lives in config
+             * (`googleApiKey`) or MZAZI_API_KEY, never in the code, and the failure modes are
+             * separated because they need different fixes from the operator: no key at all,
+             * a key the API rejects, or the network being unreachable.
+             */
+            const query = args.join(' ').trim();
+            if (!query) return bigboreply(`🔎 *Google*\n\nUsage: ${config.prefix || '.'}${command} <what to search for>`);
+
+            try {
+                const gsearch = require('./lib/google-search.js');
+
+                if (!gsearch.hasKey()) {
+                    return bigboreply([
+                        '❌ *No search API key configured.*',
+                        '',
+                        'Add this to config.json:',
+                        '  "googleApiKey": "mzazi_your_key"',
+                        '',
+                        'or set MZAZI_API_KEY in the environment. The endpoint rejects anything',
+                        'else with INVALID_API_KEY — the mzazi_xxxxxxxxx placeholder is not a key.'
+                    ].join('\n'));
+                }
+
+                await setReaction(conn, m, '🔎');
+                const found = await gsearch.search(query);
+
+                if (!found.ok) {
+                    const why = found.reason === 'bad-key'
+                        ? 'The API rejected the key (INVALID_API_KEY). Check `googleApiKey` in config.json.'
+                        : found.reason === 'network'
+                            ? `Could not reach the search endpoint: ${found.message}`
+                            : found.reason === 'http'
+                                ? `The endpoint answered HTTP ${found.status}.`
+                                : `Search failed (${found.reason}).`;
+                    console.error('[GOOGLE] search failed:', found.reason, found.error || found.message || found.status || '');
+                    return bigboreply(`❌ ${why}`);
+                }
+
+                if (!found.results.length) {
+                    // A 200 with nothing we recognise is worth distinguishing from "no hits":
+                    // it usually means the response shape changed, not that Google had none.
+                    const keys = found.raw && typeof found.raw === 'object' ? Object.keys(found.raw).join(', ') : '(none)';
+                    console.error(`[GOOGLE] no results parsed. top-level keys: ${keys}`);
+                    return bigboreply(`🔎 No results for *${query}*.\n\n_If this keeps happening the API response shape may have changed._`);
+                }
+
+                const top = found.results.slice(0, 6);
+                const body = top.map((r, i) => {
+                    const title = r.title || r.link;
+                    const snippet = r.snippet.length > 170 ? `${r.snippet.slice(0, 170)}…` : r.snippet;
+                    return `*${i + 1}. ${title}*${snippet ? `\n${snippet}` : ''}${r.link ? `\n${r.link}` : ''}`;
+                }).join('\n\n');
+
+                console.log(`[GOOGLE] "${query}" -> ${found.results.length} result(s)`);
+                return bigboreply(`🔎 *Google — ${query}*\n\n${body}`);
+            } catch (error) {
+                console.error('[GOOGLE] Error:', error?.stack || error);
+                return bigboreply('❌ The search could not be completed.');
+            }
+        }
+
         case 'tictactoe': {
             /*
              * Playable, which a rich-only card would not be: a rendered card swallows

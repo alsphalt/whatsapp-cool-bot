@@ -1778,7 +1778,18 @@ function welcomeStage({ esc, avatar, paired, when, keylock = null, live = null }
           <span class="app-name">Security</span>
         </button>
         <button class="app" id="open-chrome" type="button">
-          <span class="app-icon"><span class="app-dn">🌐</span></span>
+          <span class="app-icon">
+            <!-- Drawn, not an emoji: the Chrome mark is three colour wedges around a blue
+                 core, which no globe glyph carries. Roughly the real geometry, scaled. -->
+            <svg class="chrome-svg" viewBox="0 0 48 48" aria-hidden="true">
+              <circle cx="24" cy="24" r="22" fill="#fff"/>
+              <path fill="#ea4335" d="M24 2a22 22 0 0 1 19.05 11H24a11 11 0 0 0-9.53 5.5L5.02 10.62A22 22 0 0 1 24 2z"/>
+              <path fill="#34a853" d="M5.02 10.62l9.45 16.38A11 11 0 0 0 24 35v11A22 22 0 0 1 5.02 10.62z"/>
+              <path fill="#fbbc05" d="M43.05 13a22 22 0 0 1-19.05 33V35a11 11 0 0 0 9.53-16.4z"/>
+              <circle cx="24" cy="24" r="9.4" fill="#fff"/>
+              <circle cx="24" cy="24" r="7.2" fill="#4285f4"/>
+            </svg>
+          </span>
           <span class="app-name">Chrome</span>
         </button>
         <button class="app" id="open-games" type="button">
@@ -1846,8 +1857,22 @@ function welcomeStage({ esc, avatar, paired, when, keylock = null, live = null }
     <div class="games" id="chrome">
       <div class="sec-head"><button class="sec-back" id="chrome-back" type="button">‹</button><span>CHROME</span></div>
       <div class="sec-body">
-        <div class="soon"><div class="soon-ico">🌐</div><div class="soon-k">COMING SOON</div>
-        <div class="soon-p">The browser is not wired up yet. Nothing to press — this is a placeholder so the icon is where it belongs, between Security and Games.</div></div>
+        <div class="cr-top">
+          <div class="cr-omni"><span class="cr-lock">🔒</span><span class="cr-url" id="crUrl">Search or type URL</span></div>
+          <button class="cr-dots" id="crDots" type="button" aria-label="Chrome menu">⋮</button>
+        </div>
+
+        <div class="cr-menu" id="crMenu" hidden>
+          <button class="cr-item" type="button" data-cr="newtab">➕<span>New tab</span></button>
+          <button class="cr-item" type="button" data-cr="incognito">🕶<span>New Incognito tab</span></button>
+          <button class="cr-item" type="button" data-cr="history">🕘<span>History</span></button>
+          <button class="cr-item" type="button" data-cr="downloads">⬇<span>Downloads</span></button>
+          <button class="cr-item" type="button" data-cr="bookmarks">⭐<span>Bookmarks</span></button>
+          <button class="cr-item" type="button" data-cr="settings">⚙<span>Settings</span></button>
+          <button class="cr-item" type="button" data-cr="help">❓<span>Help &amp; feedback</span></button>
+        </div>
+
+        <div class="cr-panel" id="crPanel"></div>
       </div>
     </div>
 
@@ -2107,6 +2132,36 @@ function appStyles() {
     font-family:'Courier New',monospace;font-size:11.5px;letter-spacing:1.2px;text-align:left}
   .recent-item .ico{font-size:15px}
   /* The placeholder panel behind an icon that has no app yet. */
+  /* The Chrome mark has to sit in the same round tile as the glyph icons, so it is sized
+     to the tile's inner box rather than inheriting the emoji's font-size. */
+  .chrome-svg{width:30px;height:30px;display:block}
+
+  /* CHROME. The omnibox, the ⋮ menu and its panels, in Chrome's own proportions: a pill
+     omnibox across the top, a three-dot button on the right, and a dropdown of rows. */
+  .cr-top{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .cr-omni{flex:1;display:flex;align-items:center;gap:8px;padding:11px 14px;border-radius:999px;
+    background:#202124;border:1px solid #3c4043;color:#e8eaed;font-size:12px;min-width:0}
+  .cr-lock{font-size:11px;opacity:.8;flex:0 0 auto}
+  .cr-url{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9aa0a6}
+  .cr-dots{width:38px;height:38px;flex:0 0 auto;border-radius:50%;cursor:pointer;font-size:18px;
+    color:#e8eaed;background:transparent;border:none;-webkit-tap-highlight-color:transparent}
+  .cr-dots:active{background:#2a2b2e}
+  .cr-menu{display:flex;flex-direction:column;margin-bottom:10px;border-radius:12px;overflow:hidden;
+    background:#292a2d;border:1px solid #3c4043}
+  .cr-menu[hidden]{display:none}
+  .cr-item{display:flex;align-items:center;gap:12px;padding:13px 14px;cursor:pointer;text-align:left;
+    background:transparent;border:none;color:#e8eaed;font-size:12.5px;font-family:inherit;
+    border-bottom:1px solid rgba(255,255,255,.06)}
+  .cr-item:last-child{border-bottom:none}
+  .cr-item:active{background:#35363a}
+  .cr-panel{min-height:120px}
+  .cr-void{display:flex;flex-direction:column;align-items:center;text-align:center;padding:26px 12px}
+  .cr-void .k{font-size:12.5px;color:#e8eaed;font-weight:700}
+  .cr-void .p{margin-top:8px;font-size:11.5px;line-height:1.6;color:#9aa0a6;max-width:270px}
+  .cr-void code{font-family:'Courier New',monospace;color:#8ab4f8}
+  .cr-row{display:flex;align-items:center;justify-content:space-between;padding:13px 14px;
+    border-bottom:1px solid rgba(255,255,255,.06);font-size:12px;color:#e8eaed}
+  .cr-row:last-child{border-bottom:none}
   .soon{display:flex;flex-direction:column;align-items:center;text-align:center;padding:26px 14px}
   .soon-ico{font-size:34px}
   .soon-k{margin-top:12px;font-family:'Courier New',monospace;font-size:12px;letter-spacing:3px;
@@ -2576,6 +2631,67 @@ ${ttt.script}
   });
   var ludoBack = document.getElementById('ludo-back');
   if (ludoBack) ludoBack.addEventListener('click', function () { openGames(); });
+
+  /*
+   * ── CHROME ───────────────────────────────────────────────────────────────────
+   *
+   * The omnibox and the ⋮ menu in Chrome's own layout: pill address bar, three-dot
+   * button, dropdown of rows, panels behind them.
+   *
+   * What it CANNOT do is search, and the default panel says so instead of leaving an
+   * inert box that looks broken. This card is a standalone file: no fetch, no network,
+   * no channel to the bot. Searching happens in the CHAT, where the bot makes the
+   * request: send DOThashtaggoogle followed by the question, handled by
+   * lib/google-search.js.
+   */
+  var crMenu = document.getElementById('crMenu');
+  var crPanel = document.getElementById('crPanel');
+
+  function crVoid(icon, title, text) {
+    return '<div class="cr-void"><div style="font-size:26px">' + icon + '</div>'
+      + '<div class="k" style="margin-top:8px">' + title + '</div>'
+      + '<div class="p">' + text + '</div></div>';
+  }
+
+  var CR_PANELS = {
+    newtab: ['➕', 'New tab', 'Nothing to load — this card travels as a single file and has no network.'],
+    incognito: ['🕶', 'Incognito', 'There is no browsing here to keep private, so there is nothing for Incognito to hide.'],
+    history: ['🕘', 'History', 'History is empty. A card that is one file keeps no browsing history.'],
+    downloads: ['⬇', 'Downloads', 'Downloads is empty — the card cannot fetch a file to download.'],
+    bookmarks: ['⭐', 'Bookmarks', 'No bookmarks yet.'],
+    help: ['❓', 'Help &amp; feedback', 'For a real search, send <code>.google your question</code> in the chat. The bot makes the request, not this page.']
+  };
+
+  function crShow(what) {
+    if (!crPanel) return;
+    if (crMenu) crMenu.setAttribute('hidden', 'hidden');
+    if (what === 'settings') {
+      crPanel.innerHTML = '<div class="cr-row"><span>Search engine</span><span>Google</span></div>'
+        + '<div class="cr-row"><span>SafeSearch</span><span>Active</span></div>'
+        + '<div class="cr-row"><span>Theme</span><span>Dark</span></div>'
+        + '<div class="cr-row"><span>JavaScript</span><span>Allowed</span></div>';
+      return;
+    }
+    var panel = CR_PANELS[what];
+    crPanel.innerHTML = panel
+      ? crVoid(panel[0], panel[1], panel[2])
+      : crVoid('🔎', 'Search from the chat', 'Send <code>.google your question</code> in the chat.');
+  }
+
+  function crDefault() {
+    if (!crPanel) return;
+    crPanel.innerHTML = crVoid('🔎', 'Search from the chat',
+      'This page cannot reach the internet, so the omnibox is a picture of one. Send <code>.google your question</code> in the chat and DARKNOTE runs the search for you.');
+  }
+
+  var crDots = document.getElementById('crDots');
+  if (crDots) crDots.addEventListener('click', function () {
+    if (crMenu) crMenu.toggleAttribute('hidden');
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-cr]'), function (btn) {
+    btn.addEventListener('click', function () { crShow(btn.getAttribute('data-cr')); });
+  });
+  crDefault();
 
   var dock = document.getElementById('back-to-lock');
   if (dock) dock.addEventListener('click', openLock);
