@@ -54,8 +54,8 @@ const index = fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8')
 const bot = fs.readFileSync(path.join(ROOT, 'lib', 'bot-instance.js'), 'utf8')
 const pairingChecks = [
   ['pairing uses ws.isOpen/readyState fallback', /ws\?\.isOpen === true \|\| conn\.ws\?\.readyState === 1/.test(index)],
-  ['pairing has a finite open deadline', /Date\.now\(\) \+ 20000/.test(index)],
-  ['secondary pairing sockets do not auto-reconnect', /__darknotePairingSocket \|\| !state\.creds\.registered/.test(bot)],
+  ['pairing has a bounded window and request timeout', /const PAIRING_WINDOW_MS = 20000/.test(index) && /const PAIRING_REQUEST_TIMEOUT_MS = 12000/.test(index) && /WhatsApp transport did not open in time/.test(index)],
+  ['unregistered pairing sockets return before reconnect scheduling', /if \(abandonedPairing\)[\s\S]{0,260}return/.test(bot) && /const abandonedPairing = conn\.__darknotePairingSocket && !state\.creds\.registered/.test(bot)],
   ['stale socket closes cannot mutate runtime', /currentSocket\(sessionId\) !== conn/.test(bot)],
   ['main stale socket closes are ignored', /currentSocket\(\) !== conn/.test(index)],
 ]

@@ -208,3 +208,89 @@
     .ttt-loading-icon, .ttt-loading-glow { animation: none; }
     .ttt-cell.is-x, .ttt-cell.is-o, .ttt-cell.is-winning { animation: none; }
 }
+
+/* ----------------------------- arcade console ----------------------------- */
+.arcade-console-head { display:flex; align-items:center; gap:13px; }
+.arcade-console-head h3 { margin:0 0 5px; }
+.arcade-console-head p { margin:0; color:var(--dn-muted, #9b9ba8); font-size:12px; line-height:1.45; }
+.arcade-console-icon { flex:0 0 52px; height:52px; display:grid; place-items:center; font-size:27px; border-radius:16px; background:linear-gradient(145deg,#ff3535,#641111); box-shadow:0 8px 24px #ff25251c; }
+.arcade-safety-note { margin:0 2px 14px; color:#9999a8; font-size:10.5px; line-height:1.5; }
+/*
+ * TWO COLUMNS, LEFT TO RIGHT, IN REGISTRATION ORDER.
+ *
+ * This was one vertical column, which left most of a phone screen empty and turned a
+ * seven-game arcade into a long scroll. The grid fills LEFT TO RIGHT, so the order the
+ * games register in (index.html's script order) is the order they are shown.
+ *
+ * The card is a column too, not the side-by-side row it used to be: the phone screen is
+ * ~390px inside the bezel, so half of it is ~150px, and a 70px art block next to a
+ * heading, a blurb and a button does not fit in that. Art on top, text under it, button
+ * pinned to the bottom so every card in a row lines up.
+ */
+.arcade-game-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; align-items:stretch; }
+.arcade-game-card { display:flex; flex-direction:column; gap:9px; padding:11px; border:1px solid var(--dn-line,#2a2a34); border-radius:16px; background:linear-gradient(145deg,#17171e,#101014); }
+.arcade-game-art { height:72px; display:grid; place-items:center; border-radius:13px; font-size:30px; background:radial-gradient(circle at 50% 25%,#4a2226,#1c1519 70%); border:1px solid #ffffff0c; }
+.arcade-game-info { min-width:0; flex:1; display:flex; flex-direction:column; }
+.arcade-game-info h4 { margin:0 0 4px; font-size:12.5px; letter-spacing:.5px; }
+.arcade-game-info p { margin:0 0 10px; color:#9999a8; font-size:10px; line-height:1.4; }
+.arcade-game-info .btn { width:100%; min-height:34px; margin-top:auto; }
+.arcade-footer { text-align:center; margin:14px 0 4px; }
+.arcade-welcome { min-height:100%; display:flex; flex-direction:column; justify-content:center; align-items:center; text-align:center; padding:24px 12px; }
+.arcade-hero-icon { width:96px; height:96px; display:grid; place-items:center; border-radius:28px; font-size:48px; background:linear-gradient(145deg,#3b171b,#181219); border:1px solid #ff47472e; box-shadow:0 0 38px #ff24241b; }
+.arcade-kicker { margin-top:23px; color:#ff6464; font-size:10px; letter-spacing:3px; font-weight:800; }
+.arcade-welcome h2 { margin:8px 0; font-size:25px; letter-spacing:2px; }
+.arcade-welcome p { max-width:290px; color:#a3a3b0; font-size:12px; line-height:1.6; }
+.arcade-stat-row { display:flex; justify-content:center; flex-wrap:wrap; gap:7px; margin:14px 0 24px; }
+.arcade-stat-row span { padding:7px 9px; border-radius:999px; border:1px solid #30303a; background:#17171d; font-size:10px; color:#d4d4de; }
+.arcade-welcome .btn { width:100%; max-width:290px; min-height:44px; letter-spacing:1px; }
+.arcade-welcome .note { max-width:285px; margin-top:16px; }
+.car-game { position:relative; padding-bottom:10px; }
+.car-hud { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:11px 12px; margin-bottom:12px; border:1px solid #292933; border-radius:14px; background:#15151b; }
+.car-hud div:not(.car-live) { display:flex; flex-direction:column; gap:3px; }
+.car-hud small { color:#8d8d9b; font-size:8px; letter-spacing:1px; }
+.car-hud strong { font-size:19px; }
+.car-live { color:#7ee0a0; font-size:9px; font-weight:800; letter-spacing:1px; }
+.car-road { height:min(55vh,430px); min-height:300px; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:hidden; position:relative; border:2px solid #4b4b56; border-radius:14px; background:linear-gradient(90deg,#24242b,#303039 50%,#24242b); }
+.car-lane { position:relative; border-right:2px dashed #77778388; }
+.car-lane:last-child { border-right:0; }
+.car-lane:nth-child(2) { background:#ffffff04; }
+.car-obstacle { position:absolute; left:50%; transform:translate(-50%,-50%); font-size:29px; filter:drop-shadow(0 3px 3px #0008); }
+.car-player { position:absolute; bottom:7%; left:50%; transform:translateX(-50%); font-size:35px; filter:drop-shadow(0 3px 4px #0009); animation:carBounce .35s ease-in-out infinite alternate; }
+.car-controls { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:12px; }
+.car-controls .btn { min-height:46px; touch-action:manipulation; }
+.car-game-over { position:absolute; inset:0; z-index:2; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:20px; background:#09090deF; }
+.car-game-over .arcade-hero-icon { width:78px; height:78px; font-size:38px; }
+.car-game-over h2 { margin:14px 0 0; letter-spacing:3px; }
+.car-game-over p { color:#d0d0d8; }
+.car-game-over .btn { width:100%; max-width:250px; min-height:44px; }
+@keyframes carBounce { from { margin-bottom:0; } to { margin-bottom:3px; } }
+@media (min-width:460px) { .arcade-game-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } .arcade-game-art { height:88px; font-size:34px; } }
+@media (prefers-reduced-motion:reduce) { .car-player { animation:none; } }
+
+/* Additional mini-game layouts */
+.mini-game { position:relative; padding-bottom:12px; }
+.mini-game-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; padding:12px; border:1px solid #292933; border-radius:14px; background:#15151b; }
+.mini-game-head small { color:#ff6464; font-size:8px; letter-spacing:2px; }
+.mini-game-head h3 { margin:5px 0 0; font-size:14px; letter-spacing:1px; }
+.mini-game-head > span { font-size:28px; }
+.game-note { margin:10px 0; padding:10px 12px; color:#c7c7d2; background:#17171e; border:1px solid #2b2b36; border-radius:11px; font-size:11px; line-height:1.5; }
+.game-board { display:block; width:100%; max-width:310px; height:auto; margin:10px auto; border:1px solid #30303a; border-radius:12px; background:#101018; }
+.game-actions { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin-top:12px; }
+.game-action { min-height:40px; padding:9px 13px; border:1px solid #393943; border-radius:11px; background:#202027; color:#f5f5fa; font:inherit; font-size:11px; font-weight:750; cursor:pointer; touch-action:manipulation; }
+.game-action:active { transform:scale(.98); }
+.game-action:disabled { opacity:.45; }
+.big-score { text-align:center; padding:8px; font-weight:800; color:#ff858b; letter-spacing:1px; }
+.runner-stage { position:relative; height:260px; overflow:hidden; border:1px solid #353540; border-radius:14px; background:repeating-linear-gradient(90deg,#17171f 0,#17171f 32.8%,#41414b 33.1%,#17171f 33.7%); }
+.runner-player { position:absolute; bottom:16px; left:41%; z-index:1; font-size:29px; transition:left .12s ease; }
+.runner-obstacle { position:absolute; transform:translateX(-50%); font-size:23px; }
+.memory-board { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:7px; max-width:310px; margin:12px auto; }
+.memory-card { aspect-ratio:1; border-radius:10px; border:1px solid #393943; background:#191920; color:#ff7077; font-size:23px; }
+.snake-controls { display:grid; grid-template-columns:repeat(3,1fr); }
+.snake-controls [data-dir="up"] { grid-column:2; }
+.snake-controls [data-dir="left"] { grid-column:1; }
+.snake-controls [data-dir="down"] { grid-column:2; }
+.snake-controls [data-dir="right"] { grid-column:3; }
+.snake-controls [data-snake-reset] { grid-column:1 / -1; }
+.reaction-pad { display:flex; width:100%; height:160px; align-items:center; justify-content:center; border-radius:15px; background:#25252d; border:1px solid #41414b; color:#fff; font-weight:900; letter-spacing:2px; touch-action:manipulation; }
+.reaction-pad.is-ready { background:#5a3135; }
+.reaction-pad.is-wait { background:#125b39; border-color:#54d6a0; }

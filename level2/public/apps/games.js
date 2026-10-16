@@ -23,44 +23,34 @@ window.DarknoteApps.register({
 
     render(root, ctx) {
         const games = window.DarknoteGames.list
-
         root.appendChild(ctx.el(`
-            <div class="panel">
-                <h3>DARKNOTE GAMING</h3>
-                <div class="note" style="margin:0">
-                    A console inside the phone. Games run here in the interface - they are not
-                    WhatsApp commands, and nothing about playing them reaches your chats.
-                </div>
+            <div class="panel arcade-console-head">
+                <div class="arcade-console-icon">🎮</div>
+                <div><h3>DARKNOTE ARCADE</h3><p>Pick a game and play right inside your phone.</p></div>
             </div>
+            <div class="arcade-safety-note">Offline mini-games · No game activity is sent to your WhatsApp chats.</div>
         `))
 
         if (!games.length) {
-            root.appendChild(ctx.el(`
-                <div class="panel">
-                    <h3>INSTALLED GAMES</h3>
-                    <div class="row"><span class="k">Tic-Tac-Toe</span><span class="v is-warn">next stage</span></div>
-                    <div class="note">
-                        The console is ready and waiting for it: a game registers itself with
-                        window.DarknoteGames.register(...) and appears here automatically, with its
-                        own loading screen, difficulty selection and Back behaviour.
-                    </div>
-                </div>
-            `))
+            root.appendChild(ctx.el('<div class="panel"><h3>ARCADE STARTING</h3><div class="note">No games have registered yet. Try refreshing the page.</div></div>'))
             return
         }
 
-        const list = ctx.el('<div class="panel"><h3>INSTALLED GAMES</h3></div>')
+        const list = ctx.el('<div class="arcade-game-grid" aria-label="Available games"></div>')
         for (const game of games) {
-            const row = ctx.el(`
-                <div class="row">
-                    <span class="k">${ctx.escape(game.label)}</span>
-                    <span class="v">${game.players || ''}</span>
-                </div>`)
-            const open = ctx.el('<button class="btn is-primary" type="button">Play</button>')
-            open.addEventListener('click', () => ctx.nav.push(`game:${game.id}`))
-            list.appendChild(row)
-            list.appendChild(open)
+            const card = ctx.el(`
+                <article class="arcade-game-card">
+                    <div class="arcade-game-art" aria-hidden="true">${game.id === 'car-rush' ? '🏎️' : game.id === 'tictactoe' ? '❎' : game.id === 'ludo-mini' ? '🎲' : game.id === 'ninja-rush' ? '🥷' : game.id === 'snake' ? '🐍' : game.id === 'memory-match' ? '🧠' : game.id === 'reaction-tap' ? '⚡' : '🎮'}</div>
+                    <div class="arcade-game-info">
+                        <h4>${ctx.escape(game.label)}</h4>
+                        <p>${ctx.escape(game.blurb || game.players || 'Ready to play')}</p>
+                        <button class="btn is-primary" type="button">PLAY NOW</button>
+                    </div>
+                </article>`)
+            card.querySelector('button').addEventListener('click', () => ctx.nav.push(`game:${game.id}`))
+            list.appendChild(card)
         }
         root.appendChild(list)
+        root.appendChild(ctx.el('<div class="note arcade-footer">More games can be added to this console without rebuilding the phone interface.</div>'))
     }
 })

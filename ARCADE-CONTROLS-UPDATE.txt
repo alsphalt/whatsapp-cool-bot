@@ -1,0 +1,11 @@
+DARKNOTE ARCADE CONTROLS UPDATE
+
+Open DARKNOTE_PHONE_ARCADE.html in a modern browser.
+
+- Offline Run is black and white and playable without network assets. Tap the stage or Jump button to hop over cacti.
+- Snake board is smaller, with directional controls underneath.
+- Car Rush auto-accelerates; use Left and Right to steer. Speed rises with levels.
+- Ninja Rush uses a single Jump control plus Start/Restart.
+- Other mini-games and the phone-style Menu2 shell are preserved.
+
+Standalone HTML arcade prototype; it does not replace the WhatsApp bot runtime or command handlers.

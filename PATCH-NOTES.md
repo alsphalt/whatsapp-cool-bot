@@ -109,3 +109,13 @@ The same code is also reachable from the bot itself once linked: `!pair <number>
 - `node_modules/` and `auth/` are deliberately **not** in this zip
   (`auth/` holds session credentials; `node_modules` is reproducible with
   `npm install`).
+
+## 2026-10-16 — Level 2 Arcade update
+
+- Added **Car Rush**, a touch-friendly three-lane traffic-dodging game with a welcome screen, live score, increasing speed, crash state, and replay button.
+- Added **Ludo Mini**, **Ninja Rush**, **Snake**, **Memory Match**, and **Reaction Tap** alongside the existing **Tic-Tac-Toe** game. These are playable mini-game versions designed for the phone UI; Ludo Mini is a quick dice race rather than the full traditional Ludo ruleset.
+- Refreshed the Games app into an arcade-style card list that reads games from the registry, so registered games appear automatically.
+- Added duplicate game-ID protection to prevent two game modules from silently registering under the same route.
+- Added the missing `npm test` and `npm run audit` scripts described by the existing stability audit.
+- Updated the stability-audit pairing checks to match the current bounded pairing-window and abandoned-pairing logic rather than stale source patterns.
+- Static verification: all 130 JavaScript files pass `node --check`; `npm run audit` passes. `npm test` could not execute in this environment because dependencies are not installed (`axios` is missing); install dependencies on the target host and rerun it.

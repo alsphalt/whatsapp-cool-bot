@@ -26,7 +26,8 @@ const suites = [
     require('./weather.test'),
     require('./presence.test'),
     require('./security.test'),
-    require('./shazam.test')
+    require('./shazam.test'),
+    require('./calculator.test')
 ]
 
 ;(async () => {

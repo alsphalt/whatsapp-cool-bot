@@ -3389,6 +3389,39 @@ module.exports = async (conn, m) => {
             break;
         }
 
+        case 'crostic': {
+            /*
+             * CROSTIC 300 — the number/letter puzzle. The card lives in lib/crostic.js.
+             *
+             * DELIVERED AS 'both', NOT RICH-ONLY, for the same reason .tictactoe is: a
+             * rich card is a RENDERED picture, not a live webview — a tap inside one is
+             * swallowed by the client and never becomes a message. Every control in this
+             * card (the level grid, clue selection, the on-screen keyboard, Hint/Clear)
+             * lives in the card's own script, so rich-only would render a puzzle that
+             * cannot be played. 'both' keeps the card inline in the chat AND ships the
+             * same page as a document, which opens in a real browser where it responds.
+             *
+             * Nothing else has to be registered: lib/command-system.js reads the case
+             * labels out of this file at runtime, so the case alone is the registration.
+             * lib/menu.js only has to advertise the name.
+             */
+            try {
+                const crostic = require('./lib/crostic.js');
+                await pairCard.sendHtmlCard(conn, m.chat, crostic.crosticDocument(), {
+                    ...quoteGuard.quoteOption(m),
+                    mode: 'both',
+                    stage: 'crostic',
+                    fileName: 'DARKNOTE-CROSTIC.html',
+                    caption: ''
+                });
+                await setReaction(conn, m, '📝');
+            } catch (error) {
+                console.error('[CROSTIC] Error:', error?.stack || error);
+                return bigboreply('❌ Could not open Crostic 300.');
+            }
+            break;
+        }
+
         case 'listgc': {
             if (!isOwner(m)) return bigboreply('Owner only');
             try {

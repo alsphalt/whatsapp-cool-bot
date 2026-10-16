@@ -309,6 +309,7 @@ html, body {
 .icon-settings { background: linear-gradient(160deg, #3d3d47, #202027); }
 .icon-swap { background: linear-gradient(160deg, #17b24a, #0c7a30); }
 .icon-games { background: linear-gradient(160deg, #ff2d2d, #8d0f0f); }
+.icon-calculator { background: linear-gradient(160deg, #3aa0ff, #12406b); }
 
 /* The Swap icon's person mark: white figure on the green tile, red accent, so the
    icon is recognisable at grid size and consistent with the other apps. */
@@ -487,6 +488,56 @@ html, body {
     .phone-screen { border-radius: 0; }
     :root { --radius-screen: 0px; }
 }
+
+/* ------------------------------- calculator -------------------------------- */
+
+/*
+ * The screen scrolls horizontally instead of shrinking or truncating the text: a large
+ * calculation is the whole point of this app, and 2^1000 is 302 digits. Grouping commas
+ * are the only formatting applied, so what is on screen is the answer itself.
+ */
+.calc { display: flex; flex-direction: column; gap: 10px; }
+.calc-screen { padding: 14px 12px; border: 1px solid var(--dn-line); border-radius: 14px; background: #0e0e13; }
+.calc-expr {
+    min-height: 34px; text-align: right; white-space: nowrap; overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 26px; font-weight: 600; line-height: 1.3; color: var(--dn-text);
+}
+.calc-expr::-webkit-scrollbar, .calc-preview::-webkit-scrollbar { height: 3px; }
+.calc-expr::-webkit-scrollbar-thumb, .calc-preview::-webkit-scrollbar-thumb { background: #34343e; border-radius: 2px; }
+.calc-preview {
+    min-height: 18px; margin-top: 6px; text-align: right; white-space: nowrap; overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px; font-weight: 500; color: #6f6f7d;
+}
+.calc-preview.is-ok { color: #7ee0a0; }
+.calc-preview.is-bad { color: #ff9b9b; }
+
+.calc-history { display: none; }
+.calc-history.has-items { display: flex; flex-direction: column; gap: 5px; max-height: 132px; overflow-y: auto; }
+.calc-history-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 7px 10px; border: 1px solid #262630; border-radius: 10px;
+    background: #14141a; color: inherit; font: inherit; text-align: left; cursor: pointer;
+    touch-action: manipulation;
+}
+.calc-history-expr { min-width: 0; color: #8d8d9b; font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.calc-history-value { flex: 0 0 auto; color: var(--dn-text); font-size: 11px; font-weight: 700; white-space: nowrap; }
+
+/* 44px minimum everywhere: these are thumb targets on a phone, and the pad never scrolls. */
+.calc-pad { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.calc-key {
+    min-height: 52px; border: 1px solid #33333d; border-radius: 13px;
+    background: #1a1a21; color: var(--dn-text);
+    font-family: inherit; font-size: 19px; font-weight: 600; line-height: 1;
+    cursor: pointer; touch-action: manipulation; -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+}
+.calc-key:active { transform: scale(.96); background: #24242c; }
+.calc-key.is-op { background: #20202a; color: #ff9a9a; }
+.calc-key.is-quiet { background: #17171d; color: #a9a9b8; font-size: 14px; }
+.calc-key.is-warn { background: #2a1417; color: #ff8080; }
+.calc-key.is-equals { background: linear-gradient(180deg, var(--dn-red), var(--dn-red-dim)); border-color: #7d1010; }
 
 @media (prefers-reduced-motion: reduce) {
     .app-layer.is-opening { animation: none; }

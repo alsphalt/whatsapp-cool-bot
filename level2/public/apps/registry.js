@@ -52,6 +52,9 @@ window.DarknoteGames = {
         if (!game?.id || typeof game.render !== 'function') {
             throw new Error('a game needs an id and a render(root, ctx) function')
         }
+        if (this.list.some(existing => existing.id === game.id)) {
+            throw new Error(`duplicate game id: ${game.id}`)
+        }
         this.list.push(game)
         return game
     }

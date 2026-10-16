@@ -1,0 +1,503 @@
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;background:#08080a;color:#f4f4f5;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  .app{position:relative;min-height:560px;overflow:hidden;
+    background:radial-gradient(120% 80% at 50% 0%,#1b0606 0%,#0a0a0c 55%,#060607 100%)}
+  /*
+   * EVERY DECORATIVE LAYER IN THIS CARD REFUSES POINTER EVENTS.
+   *
+   * These overlays cover the whole card. A full-cover overlay that still accepts taps
+   * swallows every tap beneath it, and that is exactly why the number box could not be
+   * typed into: .flash (z-index 9) sits above .wrap (z-index 4), and .sbg sits above the
+   * static .panel - so taps died on the decoration instead of reaching the input.
+   *
+   * The pairing card (lib/pair-card.js) has always done this - see #bg and #crack, both
+   * pointer-events:none - and lifts its content with #panel .fg{position:relative;
+   * z-index:1}. The same pattern is applied here.
+   */
+  .grid{position:absolute;inset:0;opacity:.25;pointer-events:none;
+    background-image:linear-gradient(rgba(255,45,45,.10) 1px,transparent 1px),
+                     linear-gradient(90deg,rgba(255,45,45,.10) 1px,transparent 1px);background-size:26px 26px}
+
+  /* ---- the flash ---- */
+  .flash{position:absolute;inset:0;background:#fff;opacity:0;z-index:9;pointer-events:none;animation:flash .85s ease-out .15s forwards}
+  .flash .lens{position:absolute;left:50%;top:50%;width:74px;height:74px;margin:-37px 0 0 -37px;border-radius:50%;
+    border:3px solid rgba(255,45,45,.85);animation:lens .85s ease-out .15s forwards}
+  @keyframes flash{0%{opacity:0}12%{opacity:.92}100%{opacity:0}}
+  @keyframes lens{0%{transform:scale(.5);opacity:1}70%{transform:scale(1.25);opacity:.5}100%{transform:scale(1.6);opacity:0}}
+  .shutter{position:absolute;top:14px;left:16px;font-size:13px;letter-spacing:2px;color:#fff;z-index:10;pointer-events:none;
+    opacity:0;animation:shutter .8s ease-out .05s forwards}
+  @keyframes shutter{0%{opacity:0;transform:translateY(-6px)}25%{opacity:.95;transform:none}100%{opacity:0}}
+
+  .wrap{position:relative;z-index:4;padding:22px 18px 26px;display:flex;flex-direction:column;align-items:center}
+  /*
+   * THE VERIFIED CARD IS A FULL PHONE SCREEN.
+   *
+   * The card stops reserving the 560px the sign-up panel needed, and stops capping the screen
+   * at 352px, so the handset from lib/phone-frame.js can be the whole thing. The sizing now
+   * comes from the shared shell - a 390x844 screen - which is why .app is deliberately NOT
+   * pinned to 100vh any more: the shell sets its own height, and pinning the card to the
+   * viewport on top of that would make the card taller than the phone inside it.
+   *
+   * .lockbody gets the first spare unit of height and .homebtn the second, so on an 844px screen
+   * the telemetry sits at the top, the clock group lands in the upper middle, and the battery
+   * panel, Home button and sensor sit down at the bottom where a handset keeps them.
+   */
+  .wrap.lockonly{padding:0}
+  .app.phoneonly{min-height:0}
+  .wrap.lockonly .lock{width:100%;max-width:none}
+  .wrap.lockonly .lockbody{margin-top:auto}
+  .wrap.lockonly .homebtn{margin-top:auto}
+  .dp{position:relative;width:104px;height:104px;margin:6px 0 14px;opacity:0;animation:dp-in .7s cubic-bezier(.2,.8,.2,1) .95s forwards}
+  .dp img,.dp .fallback{width:104px;height:104px;border-radius:26px;object-fit:cover;display:block;
+    border:2px solid rgba(255,45,45,.55);box-shadow:0 12px 34px rgba(255,45,45,.22)}
+  .dp .fallback{display:flex;align-items:center;justify-content:center;font-weight:800;letter-spacing:2px;
+    background:linear-gradient(160deg,#2a0808,#150404);color:#ff6b6b;font-size:22px}
+  .dp .ring{position:absolute;inset:-6px;border-radius:32px;border:1px dashed rgba(255,45,45,.45);animation:spin 9s linear infinite}
+  @keyframes dp-in{0%{opacity:0;transform:scale(.72) translateY(10px)}100%{opacity:1;transform:none}}
+  @keyframes spin{100%{transform:rotate(360deg)}}
+  .name{margin:0 0 4px;font-size:15px;font-weight:800;letter-spacing:5px;color:#fff;text-align:center;min-height:20px}
+  .name span{display:inline-block;opacity:0;animation:print .28s ease-out forwards}
+  @keyframes print{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .sub{margin:2px 0 18px;font-size:11px;letter-spacing:2px;color:#8b8b92;text-align:center}
+  .panel{position:relative;z-index:1;width:100%;max-width:340px;border:1px solid #26262c;border-radius:16px;
+    background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.01));padding:16px 15px 15px;
+    opacity:0;animation:up .55s ease-out 2.15s forwards}
+  @keyframes up{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+  .panel h4{margin:0 0 3px;font-size:12px;letter-spacing:2px;color:#ff5d5d}
+  .panel p{margin:0 0 12px;font-size:12px;line-height:1.65;color:#a8a8b0}
+  .field{display:flex;align-items:center;gap:9px;border:1px solid #33333a;border-radius:11px;background:#0d0d10;padding:12px 13px;margin-bottom:11px}
+  .field .flag{font-size:13px;color:#7f7f88}
+  .field .ph{font-size:14px;color:#55555e;letter-spacing:1px}
+  .field .caret{width:1px;height:16px;background:#ff2d2d;animation:blink 1.05s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+  .hint{display:flex;gap:8px;align-items:flex-start;font-size:11px;line-height:1.6;color:#8b8b92;
+    border-top:1px dashed #2a2a30;padding-top:11px;margin-top:2px}
+  .hint b{color:#e8e8ec;font-weight:600}
+  .badge{display:inline-flex;align-items:center;gap:6px;font-size:10px;letter-spacing:1.5px;
+    border:1px solid rgba(255,45,45,.45);color:#ff7a7a;border-radius:999px;padding:4px 10px;margin-bottom:12px}
+  .ok{width:100%;max-width:340px;border:1px solid rgba(34,197,94,.42);border-radius:16px;
+    background:linear-gradient(180deg,rgba(34,197,94,.10),rgba(34,197,94,.02));padding:18px 16px;text-align:center;
+    opacity:0;animation:up .55s ease-out 1.6s forwards}
+  .ok .tick{width:52px;height:52px;margin:2px auto 12px;border-radius:50%;border:2px solid rgba(34,197,94,.6);
+    display:flex;align-items:center;justify-content:center}
+  .ok .tick svg{width:26px;height:26px}
+  .ok .tick path{stroke:#22c55e;stroke-width:3.4;fill:none;stroke-linecap:round;stroke-linejoin:round;
+    stroke-dasharray:32;stroke-dashoffset:32;animation:draw .6s ease-out 1.9s forwards}
+  @keyframes draw{to{stroke-dashoffset:0}}
+  .ok h3{margin:0 0 6px;font-size:14px;letter-spacing:3px;color:#4ade80}
+  .ok .num{font-size:17px;font-weight:700;letter-spacing:1px;color:#fff;margin:2px 0 8px}
+  .ok .meta{font-size:11px;color:#8fbf9f;line-height:1.7}
+  .bar{position:absolute;left:0;right:0;bottom:0;height:3px;background:linear-gradient(90deg,transparent,#ff2d2d,transparent);pointer-events:none;
+    opacity:.5;animation:sweep 2.4s ease-in-out infinite}
+  @keyframes sweep{0%,100%{transform:translateX(-30%)}50%{transform:translateX(30%)}}
+</style>
+<style>
+  .sbg{position:absolute;inset:0;overflow:hidden;z-index:0;pointer-events:none}
+  .sdp{position:absolute;left:50%;top:46%;width:330px;height:330px;margin:-165px 0 0 -165px;border-radius:44px;
+    background-size:cover;background-position:center;opacity:.22;filter:blur(3px);
+    animation:drift 18s ease-in-out infinite alternate}
+  @keyframes drift{0%{transform:scale(1) translate(-12px,-8px) rotate(-2deg)}100%{transform:scale(1.12) translate(12px,10px) rotate(2deg)}}
+  .sicon{position:absolute;width:34px;height:34px;opacity:.5;animation:float 7s ease-in-out infinite}
+  .sicon svg{width:100%;height:100%}
+  .sicon.i1{left:8%;top:16%;animation-delay:0s}
+  .sicon.i2{right:10%;top:26%;animation-delay:1.1s}
+  .sicon.i3{left:13%;bottom:26%;animation-delay:2.2s}
+  .sicon.i4{right:8%;bottom:16%;animation-delay:3.3s}
+  @keyframes float{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-14px) rotate(6deg)}}
+  .sfade{position:absolute;inset:0;background:radial-gradient(120% 70% at 50% 20%,rgba(10,10,14,.35) 0%,rgba(8,8,12,.86) 60%,#06060a 100%)}
+
+  /* The number is typed into a REAL input: the box keeps the border, background and
+     padding it always had, and the input inside it is bare, so it looks the same and is
+     now actually editable with the device keyboard. */
+  .field{transition:border-color .25s ease,box-shadow .25s ease}
+  .field:focus-within{border-color:#ff5d5d;box-shadow:0 0 0 3px rgba(255,45,45,.12)}
+  .field .num-input{flex:1;min-width:0;background:transparent;border:0;outline:0;padding:0;margin:0;
+    color:#fff;font:inherit;font-size:15px;letter-spacing:1.4px;caret-color:#ff2d2d}
+  .field .num-input::placeholder{color:#55555e;letter-spacing:1px;opacity:1}
+  .field .tick{margin-left:auto;font-size:12px;opacity:0;transition:opacity .25s ease}
+  .field.is-ok{border-color:rgba(34,197,94,.6);background:rgba(34,197,94,.07)}
+  .field.is-bad{border-color:rgba(255,45,45,.6);background:rgba(255,45,45,.07)}
+  .field.is-ok .tick{opacity:1;color:#4ade80}
+  .field.is-bad .tick{opacity:1;color:#ff7a7a}
+  .keyhint{font-size:11px;line-height:1.55;color:#7c7c86;margin:-3px 0 11px}
+  .keyhint b{color:#e8e8ec}
+
+  /*
+   * PINNED TO THE BOTTOM OF THE CARD, not appended under the panel.
+   *
+   * In the WhatsApp card viewer the HTML sits in a fixed-height frame that does not
+   * scroll, so a keypad added BELOW the panel opened out of sight - the tap looked like
+   * it did nothing. Fixed to the frame's own bottom edge it is always visible, whatever
+   * the content above it measures.
+   */
+  .keypad{position:fixed;left:0;right:0;bottom:0;z-index:60;display:none;
+    padding:10px 12px 12px;border-top:1px solid #2b2b32;
+    background:linear-gradient(180deg,#101014,#0a0a0d 70%,#08080a);
+    box-shadow:0 -18px 40px rgba(0,0,0,.65)}
+  .keypad.open{display:block;animation:kp-in .22s ease-out}
+  @keyframes kp-in{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+  .kp-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  .kp-title{font-size:10px;letter-spacing:2px;color:#ff7a7a}
+  /*
+   * TOUCH. These controls are driven by the card's own script, and in WhatsApp's offline
+   * sandbox a finger tap does not reliably produce a click. So they are made touch-safe
+   * HERE as well as in the handlers, which only leaves the gesture itself to go wrong:
+   *   touch-action:manipulation   no 300ms delay, and double-tap zoom cannot eat a tap
+   *   -webkit-touch-callout:none  no iOS long-press menu stealing a held key
+   *   user-select:none            no text-selection drag starting at a key
+   * 44px tall keys, so a thumb actually lands on the digit it aimed at.
+   */
+  .kp-close,.kp-key,.kp-open{touch-action:manipulation;-webkit-touch-callout:none;
+    -webkit-user-select:none;user-select:none;cursor:pointer}
+  .kp-close{background:transparent;border:1px solid #33333a;border-radius:8px;color:#a8a8b0;
+    font:600 13px/1 inherit;padding:8px 12px;min-height:36px}
+  .kp-open{margin-left:6px;border:1px solid #33333a;background:#15151a;border-radius:8px;
+    color:#ff8f8f;font-size:14px;line-height:1;padding:9px 11px;min-height:36px}
+  .kp-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;max-width:340px;margin:0 auto}
+  .kp-key{height:44px;border-radius:10px;border:1px solid #2a2a32;background:#15151a;color:#f4f4f5;
+    font:600 17px/1 ui-monospace,Menlo,monospace}
+  .kp-key:active{background:#22222a;transform:scale(.96)}
+  .kp-del{color:#ff8f8f}
+  .kp-wide{grid-column:1 / -1;height:38px;font-size:12px;letter-spacing:2px;color:#5ee08a;
+    border-color:#1c4a2c;background:#0c1512}
+  .signup-footer{margin:18px 0 2px;font-size:13px;letter-spacing:2px;color:#ff8f8f;opacity:.9;
+    text-align:center;text-shadow:0 2px 14px rgba(255,45,45,.35);animation:fadein 1.2s ease-out 2.6s both}
+  @keyframes fadein{from{opacity:0;transform:translateY(8px)}to{opacity:.9;transform:none}}
+</style>
+
+<style>
+/* DARKNOTE handset + game console */
+html,body{min-height:100%;background:#030304}
+body{padding:24px 10px 36px;display:flex;justify-content:center;align-items:flex-start}
+.phone-shell{position:relative;width:min(100%,430px);padding:12px;border-radius:48px;background:linear-gradient(135deg,#45454c,#09090b 18%,#25252b 48%,#050506 80%,#55555b);box-shadow:0 28px 90px #000,0 0 0 2px #686870, inset 0 0 0 2px #111;isolation:isolate}
+.phone-screen{position:relative;overflow:hidden;border-radius:37px;background:#08080a;min-height:780px;border:2px solid #111}
+.phone-camera{position:absolute;z-index:90;top:17px;left:50%;transform:translateX(-50%);width:82px;height:20px;border-radius:20px;background:#020203;border:1px solid #29292e;box-shadow:inset 0 0 0 2px #070708}
+.phone-camera:after{content:"";position:absolute;right:10px;top:6px;width:7px;height:7px;border-radius:50%;background:#17202d;box-shadow:0 0 5px #29496b}
+.phone-side{position:absolute;width:3px;background:#55555d;border-radius:3px}
+.side-left{height:66px;left:-3px;top:135px;box-shadow:0 83px 0 #55555d}
+.side-right{height:95px;right:-3px;top:180px}
+.app{min-height:760px}
+.wrap{padding-top:42px}
+.keypad{position:absolute;left:0;right:0;bottom:0;border-radius:18px 18px 0 0}
+.game-console{position:relative;z-index:12;margin:14px 12px 20px;padding:15px;border:1px solid #292930;border-radius:22px;background:linear-gradient(155deg,#17171c,#09090d 65%);box-shadow:0 12px 35px #0008}
+.gc-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.gc-brand{font-weight:900;letter-spacing:2px;color:#ff626b;font-size:13px}
+.gc-status{font-size:9px;color:#8c8c97;letter-spacing:1.2px}
+.gc-intro{font-size:11px;color:#a8a8b2;line-height:1.5;margin:-4px 0 13px}
+.game-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+.game-tile{min-height:93px;text-align:left;border:1px solid #303039;border-radius:15px;padding:12px;background:linear-gradient(145deg,#202027,#111115);color:#f4f4f5;cursor:pointer;touch-action:manipulation}
+.game-tile:active{transform:scale(.97);border-color:#ff555e}
+.game-tile .emoji{font-size:25px;display:block;margin-bottom:7px}
+.game-tile strong{font-size:12px;display:block}
+.game-tile small{font-size:10px;color:#8e8e99}
+.game-view{display:none;position:relative;z-index:15;margin:14px 12px 20px;padding:14px;border:1px solid #34343d;border-radius:22px;background:#0b0b10;min-height:350px}
+.game-view.active{display:block}
+.game-head{display:flex;gap:10px;align-items:center;margin-bottom:12px}
+.game-head h3{font-size:14px;margin:0;letter-spacing:1px}
+.game-head p{font-size:10px;color:#9696a2;margin:4px 0 0}
+.game-back,.game-action{border:1px solid #45454f;border-radius:10px;padding:9px 12px;background:#1b1b23;color:#f4f4f5;font-weight:700;font-size:11px;cursor:pointer;touch-action:manipulation}
+.game-back{margin-left:auto}
+.game-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.game-note{font-size:11px;line-height:1.5;color:#b8b8c2;min-height:18px;margin:8px 0}
+.game-board{width:100%;max-width:270px;max-height:230px;display:block;margin:8px auto;border-radius:12px;background:#111118;touch-action:manipulation}
+#snake-board{width:min(100%,260px);height:auto;aspect-ratio:1/0.82}
+.direction-pad{display:grid;grid-template-columns:repeat(3,54px);gap:6px;justify-content:center;margin:10px auto}
+.direction-pad button{min-height:42px;font-size:18px}
+.direction-pad .empty{visibility:hidden}
+.car-stage{height:280px;max-width:320px;margin:8px auto;position:relative;overflow:hidden;border:2px solid #444;border-radius:14px;background:#222}
+.car-road{position:absolute;inset:0;background:repeating-linear-gradient(90deg,#242424 0 32%,#777 32% 33%,#242424 33% 65%,#777 65% 66%,#242424 66%)}
+.car-road:after{content:"";position:absolute;left:33%;height:100%;border-left:3px dashed #ddd;opacity:.8;box-shadow:105px 0 0 #ddd}
+.car-sprite,.traffic-car{position:absolute;font-size:27px;z-index:2;transform:translateX(-50%);transition:left .12s}
+.car-sprite{bottom:12px;left:50%;font-size:32px}
+.traffic-car{top:-35px}
+.offline-stage{height:260px;max-width:320px;margin:8px auto;position:relative;overflow:hidden;background:#fff;color:#111;border:2px solid #111;border-radius:10px;filter:grayscale(1);touch-action:manipulation}
+.offline-ground{position:absolute;bottom:30px;left:0;right:0;border-bottom:2px solid #111}
+.offline-dino{position:absolute;left:28px;bottom:31px;font-size:34px;filter:grayscale(1)}
+.offline-cactus{position:absolute;bottom:31px;right:-30px;font-size:30px;color:#111}
+.jump-button{width:100%;min-height:52px;font-size:15px!important;background:#f1f1f1!important;color:#111!important;border-color:#111!important}
+.ttt-board{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-width:260px;margin:12px auto}
+.ttt-cell{aspect-ratio:1;border:1px solid #363640;border-radius:12px;background:#191920;color:#ff696f;font-size:34px;font-weight:900}
+.memory-board{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;max-width:310px;margin:12px auto}
+.memory-card{aspect-ratio:1;border-radius:10px;border:1px solid #393943;background:#191920;color:#ff7077;font-size:23px}
+.runner-stage{height:220px;position:relative;overflow:hidden;border-radius:14px;border:1px solid #31313b;background:linear-gradient(#171728,#09090d);touch-action:manipulation}
+.runner-stage:after{content:"";position:absolute;left:0;right:0;bottom:25px;border-top:2px dashed #454552}
+.runner-player{position:absolute;bottom:31px;left:25%;font-size:30px;z-index:2;transition:left .12s}
+.runner-obstacle{position:absolute;bottom:29px;font-size:25px}
+.big-score{text-align:center;font-size:28px;font-weight:900;color:#ff686f;margin:8px}
+@media(max-width:480px){body{padding:8px 5px 20px}.phone-shell{border-radius:39px;padding:8px}.phone-screen{border-radius:30px}.phone-camera{top:12px}.wrap{padding-top:35px}.game-console,.game-view{margin-left:8px;margin-right:8px;padding:12px}}
+</style>
+
+</head><body>
+<div class="phone-shell" id="phone-shell"><div class="phone-side side-left"></div><div class="phone-side side-right"></div><div class="phone-camera"></div><div class="phone-screen">
+<div class="app">
+  <div class="grid"></div>
+  <div class="flash"><div class="lens"></div></div>
+  <div class="shutter">📸 DARKNOTE</div>
+  <div class="wrap">
+    
+    <div class="dp"><div class="ring"></div>
+      <img src="data:image/jpeg;base64,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" alt="DARKNOTE">
+    </div>
+    <div class="name"><span style="animation-delay:1.450s">D</span><span style="animation-delay:1.485s">A</span><span style="animation-delay:1.520s">R</span><span style="animation-delay:1.555s">K</span><span style="animation-delay:1.590s">N</span><span style="animation-delay:1.625s">O</span><span style="animation-delay:1.660s">T</span><span style="animation-delay:1.695s">E</span><span style="animation-delay:1.730s">&nbsp;</span><span style="animation-delay:1.765s">M</span><span style="animation-delay:1.800s">E</span><span style="animation-delay:1.835s">N</span><span style="animation-delay:1.870s">U</span><span style="animation-delay:1.905s">2</span><span style="animation-delay:1.940s">&nbsp;</span><span style="animation-delay:1.975s">I</span><span style="animation-delay:2.010s">S</span><span style="animation-delay:2.045s">&nbsp;</span><span style="animation-delay:2.080s">A</span><span style="animation-delay:2.115s">C</span><span style="animation-delay:2.150s">T</span><span style="animation-delay:2.185s">I</span><span style="animation-delay:2.220s">V</span><span style="animation-delay:2.255s">E</span></div>
+    <div class="sub">DARKNOTE · LEVEL 2 · MENU 2</div>
+    
+    <div class="sbg">
+      <div class="sdp" style="background-image:url('data:image/jpeg;base64,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')"></div>
+      
+    <div class="sicon i1"><svg viewBox="0 0 40 40"><rect x="2" y="2" width="36" height="36" rx="11" fill="#1b0a0a" stroke="#ff5d5d" stroke-width="1.6"/><path d="M11 27V13h6.4c4.6 0 7.6 2.6 7.6 7s-3 7-7.6 7H11zm4-3.4h2.2c2.4 0 4-1.4 4-3.6s-1.6-3.6-4-3.6H15v7.2z" fill="#ff8f8f"/></svg></div>
+    <div class="sicon i2"><svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="18" fill="#0f1b14" stroke="#25d366" stroke-width="1.6"/><path d="M20 9c-6 0-10.8 4.6-10.8 10.3 0 1.9.5 3.6 1.5 5.1L9.4 30l5-1.4c1.4.8 3.1 1.2 4.9 1.2h.7c6 0 10.8-4.6 10.8-10.3S26 9 20 9z" fill="none" stroke="#25d366" stroke-width="1.5"/><path d="M16 15.6c.3-.7.6-.7 1-.7h.7c.2 0 .5 0 .7.5l1 2.2c.1.3 0 .5-.1.7l-.5.6c-.1.2-.2.3 0 .6.5.9 1.4 1.8 2.4 2.3.3.1.4.1.6-.1l.7-.8c.2-.2.4-.2.6-.1l2 1c.3.1.4.3.4.5 0 .7-.5 1.5-1 1.7-.4.2-1 .3-3-.5-2.4-1-4-3.4-4.3-3.8-.3-.4-1-1.5-1-2.9 0-1.3.7-2 .9-2.2z" fill="#25d366"/></svg></div>
+    <div class="sicon i3"><svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="18" fill="#0e1621" stroke="#2aa6e0" stroke-width="1.6"/><path d="M10.5 19.6l16.2-6.3c.8-.3 1.5.2 1.2 1.4l-2.8 13c-.2.8-.7 1-1.4.6l-3.8-2.8-1.9 1.8c-.2.2-.4.4-.8.4l.3-4 7.3-6.6c.3-.3 0-.5-.5-.2l-9 5.6-3.9-1.2c-.8-.3-.9-1-.1-1.3z" fill="#2aa6e0"/></svg></div>
+    <div class="sicon i4"><svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="18" fill="#12141c" stroke="#8fb9d8" stroke-width="1.6"/><circle cx="20" cy="20" r="9.5" fill="none" stroke="#8fb9d8" stroke-width="1.4"/><ellipse cx="20" cy="20" rx="4" ry="9.5" fill="none" stroke="#8fb9d8" stroke-width="1.4"/><path d="M10.5 20h19" stroke="#8fb9d8" stroke-width="1.4"/><path d="M12 14.5h16M12 25.5h16" stroke="#8fb9d8" stroke-width="1.1"/></svg></div>
+      <div class="sfade"></div>
+    </div>
+    <div class="panel">
+      <div class="badge">🔐 STEP 1 OF 1</div>
+      <h4>SIGN UP</h4>
+      <p>All you need is your number — the one this device is paired to. Type it in the box below.</p>
+      <div class="field" id="num-field"
+           data-paired="254705472771" data-mask="2547••••2771">
+        <span class="flag">＋</span>
+        <!--
+          A REAL input, so tapping it raises the device keyboard and the number can simply
+          be typed. The card's own keypad is still here as a second way in (the button to
+          the right) and writes into this same input, so both paths agree on one value.
+        -->
+        <input class="num-input" id="num-input" type="tel" inputmode="tel" autocomplete="tel"
+               enterkeyhint="send" maxlength="20" placeholder="Your number"
+               aria-label="Your number" spellcheck="false" autocorrect="off" autocapitalize="off">
+        <span class="tick" id="num-tick"></span>
+        <button type="button" class="kp-open" id="kp-open" aria-label="Type with the keypad">🔢</button>
+      </div>
+      <div class="keyhint" id="key-hint">Type the number this device is paired to (2547••••2771) — or tap 🔢 to use the keypad.</div>
+      <div class="hint"><span>✍️</span><div><b>Then send it in the chat.</b><br>
+        This card runs offline, so it cannot submit a form — DARKNOTE reads the number from the chat.</div></div>
+      
+    </div>
+
+    <div class="signup-footer">亗 𝘽𝙄𝙂𝘽𝙍𝙊𝙏𝙃𝙀𝙍 亗</div>
+  </div>
+  
+  
+    <div class="keypad" id="keypad" aria-hidden="true">
+      <div class="kp-head">
+        <span class="kp-title" id="kp-title">🔢 ENTER YOUR NUMBER</span>
+        <button type="button" class="kp-close" id="kp-close" aria-label="Close keypad">✕</button>
+      </div>
+      <div class="kp-grid" id="kp-grid">
+        <button type="button" class="kp-key" data-k="1">1</button><button type="button" class="kp-key" data-k="2">2</button><button type="button" class="kp-key" data-k="3">3</button><button type="button" class="kp-key" data-k="4">4</button><button type="button" class="kp-key" data-k="5">5</button><button type="button" class="kp-key" data-k="6">6</button><button type="button" class="kp-key" data-k="7">7</button><button type="button" class="kp-key" data-k="8">8</button><button type="button" class="kp-key" data-k="9">9</button>
+        <button type="button" class="kp-key" data-k="+">+</button>
+        <button type="button" class="kp-key" data-k="0">0</button>
+        <button type="button" class="kp-key kp-del" data-k="del">⌫</button>
+        <button type="button" class="kp-key kp-wide" data-k="done">DONE</button>
+      </div>
+    </div>
+  <div class="bar"></div>
+</div>
+
+<section class="game-console" id="game-console">
+  <div class="gc-top"><div class="gc-brand">亗 DARKNOTE ARCADE</div><div class="gc-status">OFFLINE · PLAY NOW</div></div>
+  <p class="gc-intro">Your mini phone gaming hub. Pick a game below — works locally in this HTML, with no account or internet required.</p>
+  <div class="game-grid">
+    <button class="game-tile" data-game="car"><span class="emoji">🏎️</span><strong>Car Rush</strong><small>Steer left and right</small></button>
+    <button class="game-tile" data-game="offline"><span class="emoji">🦖</span><strong>Offline Run</strong><small>Black & white cactus runner</small></button>
+    <button class="game-tile" data-game="ludo"><span class="emoji">🎲</span><strong>Ludo Mini</strong><small>Two-player race</small></button>
+    <button class="game-tile" data-game="ninja"><span class="emoji">🥷</span><strong>Ninja Rush</strong><small>Dodge and survive</small></button>
+    <button class="game-tile" data-game="snake"><span class="emoji">🐍</span><strong>Snake</strong><small>Eat, grow, score</small></button>
+    <button class="game-tile" data-game="ttt"><span class="emoji">❎</span><strong>Tic-Tac-Toe</strong><small>Play against AI</small></button>
+    <button class="game-tile" data-game="memory"><span class="emoji">🧠</span><strong>Memory Match</strong><small>Find matching pairs</small></button>
+    <button class="game-tile" data-game="reaction"><span class="emoji">⚡</span><strong>Reaction Tap</strong><small>Test your reflexes</small></button>
+  </div>
+</section>
+<section class="game-view" id="game-view">
+  <div class="game-head"><div><h3 id="game-title">GAME</h3><p id="game-subtitle">Ready to play</p></div><button class="game-back" id="game-back">← ARCADE</button></div>
+  <div id="game-content"></div>
+</section>
+<script>
+(function(){
+const consoleEl=document.getElementById('game-console'), view=document.getElementById('game-view'), content=document.getElementById('game-content');
+const title=document.getElementById('game-title'), subtitle=document.getElementById('game-subtitle');
+let cleanups=[];
+function cleanup(){cleanups.forEach(f=>{try{f()}catch(e){}});cleanups=[]}
+function showGame(name){cleanup();consoleEl.style.display='none';view.classList.add('active');content.innerHTML='';
+const names={car:['🏎️ CAR RUSH','Auto-accelerating traffic racer. Steer left and right.'],offline:['🦖 OFFLINE RUN','Black-and-white runner. Tap Jump to avoid cacti.'],ludo:['🎲 LUDO MINI','Take turns rolling. First to reach 30 wins.'],ninja:['🥷 NINJA RUSH','Tap left/right to dodge falling obstacles.'],snake:['🐍 SNAKE','Use the arrows to eat fruit and grow.'],ttt:['❎ TIC-TAC-TOE','You are X. The AI plays O.'],memory:['🧠 MEMORY MATCH','Flip cards and find every pair.'],reaction:['⚡ REACTION TAP','Wait for green, then tap as fast as you can.']};
+title.textContent=names[name][0];subtitle.textContent=names[name][1];
+if(name==='car') carRush(); if(name==='offline') offlineRun(); if(name==='ludo') ludo(); if(name==='snake') snake(); if(name==='ninja') ninja(); if(name==='ttt') ttt(); if(name==='memory') memory(); if(name==='reaction') reaction();
+}
+function actions(note){content.innerHTML='<div class="game-note" id="game-note">'+note+'</div><div class="game-actions" id="game-actions"></div>';return [document.getElementById('game-note'),document.getElementById('game-actions')]}
+function ludo(){
+let pos=[0,0],turn=0;const [note,acts]=actions('Player 1 turn. Roll the dice to move.');content.insertAdjacentHTML('beforeend','<canvas class="game-board" id="ludo-board" width="310" height="170"></canvas>');
+const c=document.getElementById('ludo-board'),ctx=c.getContext('2d');
+function draw(){ctx.clearRect(0,0,310,170);ctx.fillStyle='#111118';ctx.fillRect(0,0,310,170);for(let i=0;i<=30;i++){let x=12+i*9.5;ctx.fillStyle=i%5===0?'#393944':'#24242d';ctx.fillRect(x,72,7,25)}pos.forEach((p,i)=>{ctx.fillStyle=i?'#54b6ff':'#ff5d66';ctx.beginPath();ctx.arc(17+p*9.5,84,8,0,7);ctx.fill()});ctx.fillStyle='#ddd';ctx.font='12px sans-serif';ctx.fillText('START',8,60);ctx.fillText('FINISH',254,60);ctx.fillText('P1: '+pos[0]+' / 30',15,132);ctx.fillText('P2: '+pos[1]+' / 30',165,132)}
+function roll(){let d=1+Math.floor(Math.random()*6);pos[turn]=Math.min(30,pos[turn]+d);note.textContent='Player '+(turn+1)+' rolled '+d+'. '+(pos[turn]>=30?'🎉 Player '+(turn+1)+' wins!':'Player '+(turn+1)+' is at '+pos[turn]+'.');draw();if(pos[turn]>=30){acts.innerHTML='<button class="game-action" id="ludo-reset">Play again</button>';document.getElementById('ludo-reset').onclick=()=>showGame('ludo');return}turn=1-turn;note.textContent+=' Player '+(turn+1)+' turn.'}
+acts.innerHTML='<button class="game-action" id="ludo-roll">🎲 Roll dice</button><button class="game-action" id="ludo-reset">Restart</button>';document.getElementById('ludo-roll').onclick=roll;document.getElementById('ludo-reset').onclick=()=>showGame('ludo');draw()
+}
+function snake(){
+content.innerHTML='<div class="big-score" id="snake-score">Score: 0</div><canvas class="game-board" id="snake-board" width="260" height="210"></canvas><div class="direction-pad"><button class="game-action empty">·</button><button class="game-action" data-dir="up" aria-label="Snake up">↑</button><button class="game-action empty">·</button><button class="game-action" data-dir="left" aria-label="Snake left">←</button><button class="game-action" data-dir="down" aria-label="Snake down">↓</button><button class="game-action" data-dir="right" aria-label="Snake right">→</button></div><div class="game-actions"><button class="game-action" id="snake-reset">Restart</button></div><div class="game-note" id="snake-note">Use arrows or keyboard keys.</div>';
+const c=document.getElementById('snake-board'),x=c.getContext('2d'),sc=document.getElementById('snake-score'),nt=document.getElementById('snake-note');let s,dir,food,score,timer,dead;
+function reset(){clearInterval(timer);s=[{x:7,y:7},{x:6,y:7},{x:5,y:7}];dir={x:1,y:0};food={x:12,y:8};score=0;dead=false;nt.textContent='Use arrows or keyboard keys.';timer=setInterval(step,130);draw()}
+function draw(){x.fillStyle='#101018';x.fillRect(0,0,260,210);x.strokeStyle='#20202b';x.lineWidth=.5;for(let gx=0;gx<=260;gx+=13){x.beginPath();x.moveTo(gx,0);x.lineTo(gx,210);x.stroke()}for(let gy=0;gy<=210;gy+=10.5){x.beginPath();x.moveTo(0,gy);x.lineTo(260,gy);x.stroke()}x.fillStyle='#ff6970';x.fillRect(food.x*13+1,food.y*10.5+1,11,9);s.forEach((p,i)=>{x.fillStyle=i?'#54d6a0':'#b7ffdd';x.fillRect(p.x*13+1,p.y*10.5+1,11,9)});sc.textContent='Score: '+score}
+function step(){let h={x:s[0].x+dir.x,y:s[0].y+dir.y};if(h.x<0||h.x>=20||h.y<0||h.y>=20||s.some(p=>p.x===h.x&&p.y===h.y)){clearInterval(timer);dead=true;nt.textContent='Game over! Score '+score+'. Tap Restart to play again.';return}s.unshift(h);if(h.x===food.x&&h.y===food.y){score+=10;food={x:Math.floor(Math.random()*20),y:Math.floor(Math.random()*20)}}else s.pop();draw()}
+function set(d){if(d.x!==-dir.x||d.y!==-dir.y)dir=d}
+content.querySelectorAll('[data-dir]').forEach(b=>b.onclick=()=>set(({up:{x:0,y:-1},down:{x:0,y:1},left:{x:-1,y:0},right:{x:1,y:0}})[b.dataset.dir]));document.getElementById('snake-reset').onclick=reset;
+function key(e){let d={ArrowUp:{x:0,y:-1},ArrowDown:{x:0,y:1},ArrowLeft:{x:-1,y:0},ArrowRight:{x:1,y:0}}[e.key];if(d){e.preventDefault();set(d)}}window.addEventListener('keydown',key);cleanups.push(()=>{clearInterval(timer);window.removeEventListener('keydown',key)});reset()
+}
+function ninja(){
+content.innerHTML='<div class="big-score" id="ninja-score">Score: 0</div><div class="runner-stage" id="runner-stage"><div class="runner-player" id="runner-player">🥷</div></div><div class="game-actions"><button class="game-action jump-button" id="ninja-jump">⬆ JUMP</button><button class="game-action" id="ninja-start">Start / Restart</button></div><div class="game-note" id="ninja-note">Tap JUMP to leap over obstacles.</div>';
+let score=0,timer=null,active=false,jumping=false,obstacles=[],tick=0;const stage=document.getElementById('runner-stage'),player=document.getElementById('runner-player'),sc=document.getElementById('ninja-score'),nt=document.getElementById('ninja-note');
+function jump(){if(!active||jumping)return;jumping=true;player.style.transform='translateY(-65px)';setTimeout(()=>{jumping=false;player.style.transform='translateY(0)'},520)}
+function stop(){active=false;clearInterval(timer);timer=null;nt.textContent='Game over! Score '+score+'. Tap Start / Restart to try again.'}
+function start(){clearInterval(timer);stage.querySelectorAll('.runner-obstacle').forEach(n=>n.remove());obstacles=[];score=0;tick=0;active=true;jumping=false;player.style.transform='translateY(0)';sc.textContent='Score: 0';nt.textContent='Run! Tap JUMP to avoid obstacles.';timer=setInterval(()=>{tick++;if(tick%5===0){score++;sc.textContent='Score: '+score}if(Math.random()<.28){let o=document.createElement('span');o.className='runner-obstacle';o.textContent='🪨';o.style.right='-30px';o.style.bottom='29px';stage.appendChild(o);obstacles.push({el:o,x:stage.clientWidth+20})}obstacles.forEach(o=>{o.x-=7+Math.floor(score/10);o.el.style.right='auto';o.el.style.left=o.x+'px';if(o.x<65&&o.x>25&&!jumping)stop();if(o.x<-40){o.el.remove();obstacles=obstacles.filter(q=>q!==o)}})},80)}
+document.getElementById('ninja-jump').onclick=jump;document.getElementById('ninja-start').onclick=start;cleanups.push(()=>clearInterval(timer))
+}
+function carRush(){
+content.innerHTML='<div class="big-score" id="car-score">Score: 0 · Level: 1</div><div class="car-stage" id="car-stage"><div class="car-road"></div><div class="car-sprite" id="car-player">🏎️</div></div><div class="game-actions"><button class="game-action" id="car-left">⬅ LEFT</button><button class="game-action" id="car-right">RIGHT ➡</button><button class="game-action" id="car-start">Start / Restart</button></div><div class="game-note" id="car-note">Your car accelerates automatically. Steer left and right to dodge traffic.</div>';
+const stage=document.getElementById('car-stage'),player=document.getElementById('car-player'),sc=document.getElementById('car-score'),note=document.getElementById('car-note');let lane=1,score=0,level=1,timer=null,traffic=[];function steer(d){lane=Math.max(0,Math.min(2,lane+d));player.style.left=(lane*33+17)+'%'}function stop(){clearInterval(timer);timer=null;note.textContent='Crash! Score '+score+'. Tap Start / Restart to race again.'}function start(){clearInterval(timer);stage.querySelectorAll('.traffic-car').forEach(n=>n.remove());traffic=[];lane=1;score=0;level=1;player.style.left='50%';note.textContent='Racing! The car accelerates automatically.';timer=setInterval(()=>{score++;level=1+Math.floor(score/15);sc.textContent='Score: '+score+' · Level: '+level;let speed=3+level*0.65;if(Math.random()<Math.min(.48,.18+level*.015)){let l=Math.floor(Math.random()*3),el=document.createElement('span');el.className='traffic-car';el.textContent=['🚙','🚕','🚗'][Math.floor(Math.random()*3)];el.style.left=(l*33+17)+'%';el.style.top='-35px';stage.appendChild(el);traffic.push({el,l,y:-35})}traffic.forEach(o=>{o.y+=speed;o.el.style.top=o.y+'px';if(o.y>stage.clientHeight-65&&o.y<stage.clientHeight-20&&o.l===lane)stop();if(o.y>stage.clientHeight+20){o.el.remove();traffic=traffic.filter(q=>q!==o)}})},100)}document.getElementById('car-left').onclick=()=>steer(-1);document.getElementById('car-right').onclick=()=>steer(1);document.getElementById('car-start').onclick=start;cleanups.push(()=>clearInterval(timer))
+}
+function offlineRun(){
+content.innerHTML='<div class="big-score" id="offline-score" style="color:#111">SCORE: 0</div><div class="offline-stage" id="offline-stage"><div style="position:absolute;top:14px;left:12px;font:12px monospace">NO NETWORK NEEDED</div><div class="offline-ground"></div><div class="offline-dino" id="offline-dino">🦖</div></div><div class="game-actions"><button class="game-action jump-button" id="offline-jump">⬆ TAP TO JUMP</button><button class="game-action" id="offline-start">Restart</button></div><div class="game-note" id="offline-note">Black-and-white offline runner. Tap the screen or Jump to avoid cacti.</div>';
+const stage=document.getElementById('offline-stage'),dino=document.getElementById('offline-dino'),sc=document.getElementById('offline-score'),note=document.getElementById('offline-note');let score=0,jumping=false,active=true,timer=null,cacti=[];function jump(){if(!active||jumping)return;jumping=true;dino.style.transform='translateY(-70px)';setTimeout(()=>{jumping=false;dino.style.transform='translateY(0)'},520)}function stop(){active=false;clearInterval(timer);timer=null;note.textContent='Game over! Score '+score+'. Tap Restart to play again.'}function start(){clearInterval(timer);stage.querySelectorAll('.offline-cactus').forEach(n=>n.remove());cacti=[];score=0;active=true;jumping=false;dino.style.transform='translateY(0)';sc.textContent='SCORE: 0';note.textContent='Tap to jump over the cacti.';timer=setInterval(()=>{score++;sc.textContent='SCORE: '+score;if(Math.random()<.22){let el=document.createElement('span');el.className='offline-cactus';el.textContent='🌵';stage.appendChild(el);cacti.push({el,x:stage.clientWidth+10})}cacti.forEach(o=>{o.x-=3+Math.floor(score/30);o.el.style.right='auto';o.el.style.left=o.x+'px';if(o.x<65&&o.x>20&&!jumping)stop();if(o.x<-40){o.el.remove();cacti=cacti.filter(q=>q!==o)}})},70)}stage.onclick=jump;document.getElementById('offline-jump').onclick=jump;document.getElementById('offline-start').onclick=start;start();cleanups.push(()=>clearInterval(timer))
+}
+function ttt(){
+let board=Array(9).fill(''),over=false;content.innerHTML='<div class="ttt-board" id="ttt-board"></div><div class="game-note" id="ttt-note">Your move — X.</div><div class="game-actions"><button class="game-action" id="ttt-reset">New game</button></div>';const grid=document.getElementById('ttt-board'),note=document.getElementById('ttt-note');function winner(b){for(let a of [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]])if(b[a[0]]&&b[a[0]]===b[a[1]]&&b[a[1]]===b[a[2]])return b[a[0]];return b.every(Boolean)?'draw':null}
+function render(){grid.innerHTML='';board.forEach((v,i)=>{let b=document.createElement('button');b.className='ttt-cell';b.textContent=v;b.onclick=()=>play(i);grid.appendChild(b)})}
+function play(i){if(over||board[i])return;board[i]='X';let w=winner(board);if(w){finish(w);return}let empty=board.map((v,j)=>v?null:j).filter(v=>v!==null),move=empty.find(j=>{let b=board.slice();b[j]='O';return winner(b)==='O'});if(move===undefined)move=empty.find(j=>{let b=board.slice();b[j]='X';return winner(b)==='X'});if(move===undefined)move=empty.includes(4)?4:empty[Math.floor(Math.random()*empty.length)];if(move!==undefined)board[move]='O';w=winner(board);if(w)finish(w);render()}
+function finish(w){over=true;note.textContent=w==='draw'?'Draw!':w==='X'?'You win! 🎉':'AI wins — try again!'}document.getElementById('ttt-reset').onclick=()=>showGame('ttt');render()
+}
+function memory(){
+const emojis=['🐉','🎮','⚡','👾','🎲','🥷','🐍','🌙'];let cards=[],first=null,lock=false,matches=0,moves=0;
+content.innerHTML='<div class="game-note" id="memory-note">Pairs: 0/8 · Moves: 0</div><div class="memory-board" id="memory-board"></div><div class="game-actions"><button class="game-action" id="memory-reset">Shuffle / Restart</button></div>';
+const grid=document.getElementById('memory-board'),note=document.getElementById('memory-note');
+function render(){grid.innerHTML='';cards.forEach((v,i)=>{let b=document.createElement('button');b.className='memory-card';b.textContent=v.open||v.done?v.value:'?';b.style.color=v.done?'#54d6a0':'#ff7077';b.onclick=()=>flip(i);grid.appendChild(b)})}
+function flip(i){let v=cards[i];if(lock||v.done||v.open)return;v.open=true;if(first===null){first=i;render();return}moves++;let a=cards[first];if(a.value===v.value){a.done=v.done=true;matches++;first=null;note.textContent='Pairs: '+matches+'/8 · Moves: '+moves+(matches===8?' · You won! 🎉':'');render()}else{lock=true;render();setTimeout(()=>{a.open=v.open=false;first=null;lock=false;render()},650)}}
+function reset(){cards=[...emojis,...emojis].sort(()=>Math.random()-.5).map(value=>({value,open:false,done:false}));first=null;lock=false;matches=0;moves=0;note.textContent='Pairs: 0/8 · Moves: 0';render()}
+document.getElementById('memory-reset').onclick=reset;reset()
+}
+function reaction(){
+content.innerHTML='<div class="game-note" id="reaction-note">Press Start, wait for the panel to turn green, then tap it as quickly as possible.</div><div id="reaction-pad" style="height:160px;display:flex;align-items:center;justify-content:center;border-radius:15px;background:#25252d;border:1px solid #41414b;font-weight:900;letter-spacing:2px;touch-action:manipulation">READY?</div><div class="game-actions"><button class="game-action" id="reaction-start">Start</button></div>';let state='idle',timer,started=0;const pad=document.getElementById('reaction-pad'),note=document.getElementById('reaction-note');pad.onclick=()=>{if(state==='wait'){clearTimeout(timer);state='done';let ms=performance.now()-started;pad.style.background='#15151b';pad.textContent=ms+' ms';note.textContent='Your reaction time: '+ms.toFixed(0)+' milliseconds.'}else if(state==='ready'){clearTimeout(timer);state='early';pad.textContent='TOO EARLY!';note.textContent='Wait until green before tapping.'}};document.getElementById('reaction-start').onclick=()=>{clearTimeout(timer);state='ready';pad.style.background='#5a3135';pad.textContent='WAIT...';note.textContent='Wait for green!';timer=setTimeout(()=>{if(state==='ready'){state='wait';started=performance.now();pad.style.background='#125b39';pad.textContent='TAP NOW!'}},1000+Math.random()*2500)};cleanups.push(()=>clearTimeout(timer))
+}
+document.querySelectorAll('.game-tile').forEach(b=>b.addEventListener('click',()=>showGame(b.dataset.game)));
+document.getElementById('game-back').addEventListener('click',()=>{cleanup();view.classList.remove('active');consoleEl.style.display='block';content.innerHTML=''});
+})();
+</script>
+
+<script>
+(function () {
+    var field = document.getElementById('num-field');
+    var input = document.getElementById('num-input');
+    var tick = document.getElementById('num-tick');
+    var hint = document.getElementById('key-hint');
+    var pad = document.getElementById('keypad');
+    var grid = document.getElementById('kp-grid');
+    var closeBtn = document.getElementById('kp-close');
+    var openBtn = document.getElementById('kp-open');
+    if (!field || !input || !pad || !grid) return;
+    var paired = String(field.dataset.paired || '');
+    var masked = String(field.dataset.mask || '');
+
+    /*
+     * TAPPING ON A TOUCH SCREEN.
+     *
+     * Every control here is driven by script, and in WhatsApp's offline sandbox a finger
+     * tap on something that only listens for 'click' can do nothing at all. So each control
+     * is bound to the POINTER phase, which fires for a finger and a mouse alike, and the
+     * synthetic click that follows is then skipped - so one physical tap runs the action
+     * exactly once. Older webviews without Pointer Events fall back to 'touchstart', and a
+     * plain mouse click still works when there is no touch support at all.
+     */
+    var hasPointer = (typeof window !== 'undefined' && !!window.PointerEvent)
+    function onTap(el, fn) {
+        if (!el) return
+        var seen = false
+        if (hasPointer) el.addEventListener('pointerdown', function (e) { seen = true; fn(e) })
+        else el.addEventListener('touchstart', function (e) { seen = true; fn(e) })
+        el.addEventListener('click', function (e) { if (!seen) fn(e) })
+    }
+
+    /* Digits, and a + only at the front - the country code belongs there. */
+    function sanitise(raw) {
+        var text = String(raw || '').replace(/[^0-9+]/g, '');
+        if (text.indexOf('+') > 0) text = text.charAt(0) + text.slice(1).replace(/[+]/g, '');
+        if (text.indexOf('+') === 0) text = '+' + text.slice(1).replace(/[+]/g, '');
+        else text = text.replace(/[+]/g, '');
+        return text.slice(0, 20);
+    }
+
+    function paint() {
+        var value = input.value;
+        var digits = value.replace(/[^0-9]/g, '');
+        var matches = digits.length >= 8 && digits === paired;
+
+        field.classList.toggle('is-ok', matches);
+        field.classList.toggle('is-bad', digits.length >= 8 && !matches);
+        tick.textContent = matches ? '\u2713' : (digits.length >= 8 ? '\u2717' : '');
+        if (hint) {
+            hint.innerHTML = matches
+                ? '<b>That is the paired number.</b> Send it in the chat and DARKNOTE signs you up.'
+                : (digits.length >= 8
+                    ? 'That is not the number this session is paired to. Check it and try again.'
+                    : 'Type the number this device is paired to' + (masked ? ' (' + masked + ')' : '') + '.');
+        }
+    }
+
+    /*
+     * THE CARD'S OWN KEYPAD - the second way in, alongside typing. It writes into the same
+     * input, so however the number arrives it is checked against the paired number the
+     * same way.
+     */
+    function open() {
+        pad.classList.add('open');
+        pad.setAttribute('aria-hidden', 'false');
+        paint();
+    }
+    function shut() {
+        pad.classList.remove('open');
+        pad.setAttribute('aria-hidden', 'true');
+        paint();
+    }
+
+    function press(key) {
+        if (key === 'del') input.value = input.value.slice(0, -1);
+        else if (key === '+') { if (input.value.indexOf('+') !== 0) input.value = '+' + input.value.replace(/[+]/g, ''); }
+        else if (key === 'done') { shut(); return; }
+        else if (/^[0-9]$/.test(key)) input.value = sanitise(input.value + key);
+        paint();
+    }
+
+    onTap(grid, function (e) {
+        var node = e.target;
+        /* Walk up from the tapped node: a tap can land on the button's text, not the button. */
+        while (node && node !== grid && !node.getAttribute) node = node.parentNode;
+        while (node && node !== grid && !node.getAttribute('data-k')) node = node.parentNode;
+        if (!node || node === grid) return;
+        e.preventDefault();
+        press(String(node.getAttribute('data-k') || ''));
+    });
+
+    /* Typing straight into the input. The caret is only rewritten when something was
+       actually stripped, so normal editing is never disturbed. */
+    input.addEventListener('input', function () {
+        var clean = sanitise(input.value);
+        if (clean !== input.value) {
+            var atEnd = input.selectionStart === input.value.length;
+            input.value = clean;
+            if (atEnd && input.setSelectionRange) { try { input.setSelectionRange(clean.length, clean.length); } catch (e) { } }
+        }
+        paint();
+    });
+
+    /* The device keyboard and the card's keypad are two ways to the same value, so they are
+       never both on screen: focusing the input puts the keypad away. */
+    input.addEventListener('focus', function () { shut(); });
+
+    onTap(closeBtn, function (e) { if (e.preventDefault) e.preventDefault(); shut(); });
+    onTap(openBtn, function (e) { if (e.preventDefault) e.preventDefault(); open(); });
+
+    paint();
+})();
+</script>
+</div></div>
+</body></html>

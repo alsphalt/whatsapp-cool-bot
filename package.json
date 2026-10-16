@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node index.js",
     "protect": "node scripts/protect.js",
-    "protect:downloader": "node scripts/protect-downloader.js"
+    "protect:downloader": "node scripts/protect-downloader.js",
+    "test": "node tests/run.js",
+    "audit": "node scripts/stability-audit.js"
   },
   "dependencies": {
     "mzazibaileys": "^2.2.2",
