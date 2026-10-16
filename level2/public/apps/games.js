@@ -40,7 +40,7 @@ window.DarknoteApps.register({
         for (const game of games) {
             const card = ctx.el(`
                 <article class="arcade-game-card">
-                    <div class="arcade-game-art" aria-hidden="true">${game.id === 'car-rush' ? '🏎️' : game.id === 'tictactoe' ? '❎' : game.id === 'ludo-mini' ? '🎲' : game.id === 'ninja-rush' ? '🥷' : game.id === 'snake' ? '🐍' : game.id === 'memory-match' ? '🧠' : game.id === 'reaction-tap' ? '⚡' : '🎮'}</div>
+                    <div class="arcade-game-art" aria-hidden="true">${game.id === 'car-rush' ? '🏎️' : game.id === 'offline-run' ? '🦖' : game.id === 'tictactoe' ? '❎' : game.id === 'ludo-mini' ? '🎲' : game.id === 'ninja-rush' ? '🥷' : game.id === 'snake' ? '🐍' : game.id === 'memory-match' ? '🧠' : game.id === 'reaction-tap' ? '⚡' : '🎮'}</div>
                     <div class="arcade-game-info">
                         <h4>${ctx.escape(game.label)}</h4>
                         <p>${ctx.escape(game.blurb || game.players || 'Ready to play')}</p>

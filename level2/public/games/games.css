@@ -294,3 +294,19 @@
 .reaction-pad { display:flex; width:100%; height:160px; align-items:center; justify-content:center; border-radius:15px; background:#25252d; border:1px solid #41414b; color:#fff; font-weight:900; letter-spacing:2px; touch-action:manipulation; }
 .reaction-pad.is-ready { background:#5a3135; }
 .reaction-pad.is-wait { background:#125b39; border-color:#54d6a0; }
+
+/*
+ * OFFLINE RUN — the monochrome cactus runner.
+ *
+ * Colour is removed on purpose, not for styling: the game claims to work with the
+ * network off, so it uses no colour, no images and no webfont. The emoji glyphs are
+ * pushed through a grayscale filter (the dino is green natively, the cactus is green)
+ * so the whole stage reads black and white on any handset.
+ */
+.offline-stage { position:relative; height:230px; overflow:hidden; cursor:pointer; border:1px solid #454545; border-radius:14px; background:#0a0a0a; touch-action:manipulation; }
+.offline-badge { position:absolute; top:11px; left:12px; font:700 9px/1 ui-monospace,Menlo,monospace; letter-spacing:2px; color:#8d8d8d; }
+.offline-ground { position:absolute; left:0; right:0; bottom:38px; height:2px; background:#eaeaea; }
+.offline-dino { position:absolute; bottom:40px; left:34px; z-index:1; font-size:30px; line-height:1; filter:grayscale(1) contrast(1.35); transition:transform .18s ease; }
+.offline-cactus { position:absolute; bottom:40px; font-size:26px; line-height:1; filter:grayscale(1) contrast(1.35); }
+.offline-scanline { position:absolute; inset:0; pointer-events:none; background:repeating-linear-gradient(0deg,rgba(255,255,255,.035) 0,rgba(255,255,255,.035) 1px,transparent 1px,transparent 3px); }
+.offline-score { color:#ededed; }
